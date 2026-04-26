@@ -92,6 +92,7 @@ h2 {
 .search,
 .hero-result,
 .analysis-panel,
+.monitor-panel,
 .chart-panel,
 .notes {
   background: var(--panel);
@@ -243,18 +244,74 @@ h2 {
 
 .chart-panel,
 .analysis-panel,
+.monitor-panel,
 .holdings-panel,
 .notes {
   padding: 18px;
 }
 
 .analysis-panel,
+.monitor-panel,
 .holdings-panel {
   background: var(--panel);
   border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: 8px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(22px);
+}
+
+.monitor-note {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  line-height: 1.55;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+}
+
+.alert-list {
+  display: grid;
+  gap: 10px;
+}
+
+.alert-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.alert-item strong {
+  line-height: 1.35;
+}
+
+.alert-item span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.alert-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.tag.positive {
+  color: var(--red);
+}
+
+.tag.negative {
+  color: var(--green);
 }
 
 .tomorrow-card {

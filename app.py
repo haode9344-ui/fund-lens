@@ -8,6 +8,7 @@ import statistics
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from datetime import datetime
 from html import unescape
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 FUND_CODE_RE = re.compile(r"^\d{6}$")
+POSITIVE_WORDS = ["利好", "上涨", "增长", "增持", "回购", "中标", "突破", "创新高", "扩产", "超预期", "盈利", "涨价"]
+NEGATIVE_WORDS = ["利空", "下跌", "亏损", "减持", "处罚", "调查", "退坡", "暴跌", "违约", "低于预期", "风险", "召回"]
 
 
 def fetch_text(url: str) -> str:
@@ -34,6 +37,10 @@ def fetch_text(url: str) -> str:
     with urllib.request.urlopen(request, timeout=12) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
+
+
+def clean_text(value: str) -> str:
+    return strip_tags(value).replace("&nbsp;", " ").strip()
 
 
 def js_var(raw: str, name: str, default: Any = None) -> Any:
@@ -424,6 +431,150 @@ def today_and_after_analysis(
     ]
 
 
+def fetch_sina_7x24(limit: int = 30) -> list[dict[str, Any]]:
+    url = f"https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size={limit}&zhibo_id=152"
+    try:
+        payload = json.loads(fetch_text(url))
+        rows = payload.get("result", {}).get("data", {}).get("feed", {}).get("list", [])
+    except Exception:
+        rows = []
+    news = []
+    for row in rows:
+        text = clean_text(row.get("rich_text", ""))
+        if not text:
+            continue
+        news.append(
+            {
+                "id": f"sina-{row.get('id')}",
+                "source": "新浪财经7x24",
+                "time": row.get("create_time") or row.get("update_time") or "",
+                "title": text[:80],
+                "summary": text,
+                "url": "https://finance.sina.com.cn/7x24/",
+            }
+        )
+    return news
+
+
+def fetch_stock_notices(holdings: list[dict[str, Any]], per_stock: int = 2) -> list[dict[str, Any]]:
+    notices: list[dict[str, Any]] = []
+    for holding in holdings[:5]:
+        stock_code = holding.get("code")
+        if not stock_code:
+            continue
+        params = urllib.parse.urlencode(
+            {
+                "sr": "-1",
+                "page_size": str(per_stock),
+                "page_index": "1",
+                "ann_type": "A",
+                "client_source": "web",
+                "stock_list": stock_code,
+            }
+        )
+        url = f"https://np-anotice-stock.eastmoney.com/api/security/ann?{params}"
+        try:
+            payload = json.loads(fetch_text(url))
+            rows = payload.get("data", {}).get("list", [])
+        except Exception:
+            rows = []
+        for row in rows:
+            title = row.get("title", "")
+            art_code = row.get("art_code", "")
+            notices.append(
+                {
+                    "id": f"notice-{art_code}",
+                    "source": "东方财富公告",
+                    "time": row.get("display_time") or row.get("notice_date") or "",
+                    "title": title,
+                    "summary": title,
+                    "url": f"https://data.eastmoney.com/notices/detail/{stock_code}/{art_code}.html" if art_code else "https://data.eastmoney.com/notices/",
+                    "matched": [holding.get("name"), stock_code],
+                }
+            )
+    return notices
+
+
+def score_event(item: dict[str, Any], fund_name: str, holdings: list[dict[str, Any]], impact: dict[str, Any]) -> dict[str, Any] | None:
+    text = f"{item.get('title', '')} {item.get('summary', '')}"
+    matched: list[str] = []
+    macro_tokens = ["A股", "沪深300", "中证500", "上证指数", "深证成指", "创业板", "央行", "降准", "降息"]
+    for token in [fund_name, "基金", *macro_tokens]:
+        if token and token in text:
+            matched.append(token)
+    for industry in impact.get("topIndustries", []):
+        name = industry.get("name")
+        if name and name != "未知" and name.replace("Ⅱ", "") in text:
+            matched.append(name)
+    for holding in holdings:
+        for token in [holding.get("name"), holding.get("code")]:
+            if token and token in text:
+                matched.append(str(token))
+    matched.extend(item.get("matched") or [])
+    matched = list(dict.fromkeys([m for m in matched if m]))
+
+    positive = sum(1 for word in POSITIVE_WORDS if word in text)
+    negative = sum(1 for word in NEGATIVE_WORDS if word in text)
+    if not matched:
+        return None
+
+    sentiment = "中性"
+    if positive > negative:
+        sentiment = "正面"
+    elif negative > positive:
+        sentiment = "负面"
+    severity = min(100, 25 + len(matched) * 15 + max(positive, negative) * 20)
+    action = "观察"
+    if sentiment == "正面" and severity >= 55:
+        action = "可能利好，关注明天是否高开或放量"
+    elif sentiment == "负面" and severity >= 55:
+        action = "可能利空，谨慎加仓并观察重仓股承压"
+    elif matched:
+        action = "相关但方向未明，等待行情验证"
+
+    return {
+        **item,
+        "matched": matched,
+        "sentiment": sentiment,
+        "severity": severity,
+        "action": action,
+    }
+
+
+def load_monitor(code: str) -> dict[str, Any]:
+    fund = load_fund(code)
+    holdings = fund.get("holdings", [])
+    impact = fund.get("impact", {})
+    raw_events = fetch_sina_7x24() + fetch_stock_notices(holdings)
+    alerts = []
+    seen: set[str] = set()
+    for item in raw_events:
+        scored = score_event(item, fund.get("name", ""), holdings, impact)
+        if scored and scored["id"] not in seen:
+            alerts.append(scored)
+            seen.add(scored["id"])
+    alerts.sort(key=lambda item: item.get("severity", 0), reverse=True)
+    high = [item for item in alerts if item.get("severity", 0) >= 65]
+    status = "暂无强预警"
+    if any(item.get("sentiment") == "负面" for item in high):
+        status = "出现负面预警"
+    elif any(item.get("sentiment") == "正面" for item in high):
+        status = "出现正面预警"
+    return {
+        "code": fund.get("code"),
+        "name": fund.get("name"),
+        "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": status,
+        "watching": {
+            "fund": fund.get("name"),
+            "holdings": [f"{item.get('name')}({item.get('code')})" for item in holdings[:10]],
+            "industries": impact.get("topIndustries", []),
+        },
+        "alerts": alerts[:12],
+        "note": "本地监控会抓取新浪7x24快讯和东方财富重仓股公告，并按基金名称、重仓股、行业和情绪词做关联。新闻利好/利空与实际涨跌可能偏离，需结合行情确认。",
+    }
+
+
 def buy_view(forecast_data: dict[str, Any], impact: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
     expected = forecast_data["expectedPct"]
     probability = forecast_data["probabilityUp"]
@@ -576,6 +727,10 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/fund/"):
             code = self.path.rsplit("/", 1)[-1].split("?", 1)[0]
             self.send_json_response(lambda: load_fund(code))
+            return
+        if self.path.startswith("/api/monitor/"):
+            code = self.path.rsplit("/", 1)[-1].split("?", 1)[0]
+            self.send_json_response(lambda: load_monitor(code))
             return
         if self.path == "/":
             self.path = "/static/index.html"

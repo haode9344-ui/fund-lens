@@ -7,6 +7,10 @@ const tomorrowBadge = document.querySelector("#tomorrowBadge");
 const tomorrowCard = document.querySelector("#tomorrowCard");
 const detailGrid = document.querySelector("#detailGrid");
 const reviewList = document.querySelector("#reviewList");
+const monitorPanel = document.querySelector("#monitorPanel");
+const monitorBadge = document.querySelector("#monitorBadge");
+const monitorNote = document.querySelector("#monitorNote");
+const alertList = document.querySelector("#alertList");
 const holdingsPanel = document.querySelector("#holdingsPanel");
 const holdingsList = document.querySelector("#holdingsList");
 const impactBadge = document.querySelector("#impactBadge");
@@ -25,6 +29,7 @@ function setLoading() {
   summary.innerHTML = `<div class="muted-state"><p>正在抓取公开净值、重仓持仓和行情数据...</p></div>`;
   metrics.hidden = true;
   analysisPanel.hidden = true;
+  monitorPanel.hidden = true;
   holdingsPanel.hidden = true;
   chartPanel.hidden = true;
   notes.hidden = true;
@@ -35,6 +40,7 @@ function setError(message) {
   summary.innerHTML = `<div class="muted-state"><p>${message}</p></div>`;
   metrics.hidden = true;
   analysisPanel.hidden = true;
+  monitorPanel.hidden = true;
   holdingsPanel.hidden = true;
   chartPanel.hidden = true;
   notes.hidden = true;
@@ -562,6 +568,53 @@ async function loadFund(code) {
   return loadStaticFund(code);
 }
 
+async function loadMonitor(code) {
+  const forceStatic = new URLSearchParams(location.search).has("static");
+  if (forceStatic || location.hostname.endsWith("github.io")) return null;
+  try {
+    const response = await fetch(`/api/monitor/${code}`);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload.ok ? payload.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderMonitor(data) {
+  if (!data) {
+    monitorPanel.hidden = false;
+    monitorBadge.textContent = "本地服务未启用";
+    monitorNote.textContent = "GitHub Pages 版不能后台监控。电脑部署版会抓取新浪7x24快讯和东方财富公告，并按重仓股/行业做预警。";
+    alertList.innerHTML = "";
+    return;
+  }
+  monitorPanel.hidden = false;
+  monitorBadge.textContent = `${data.status} · ${data.updatedAt.slice(11, 16)}`;
+  monitorNote.textContent = data.note;
+  if (!data.alerts.length) {
+    alertList.innerHTML = `<article class="alert-item"><strong>暂无匹配预警</strong><span>当前没有抓到与基金、重仓股或行业强相关的快讯/公告。</span></article>`;
+    return;
+  }
+  alertList.innerHTML = data.alerts
+    .map((item) => {
+      const sentimentClass = item.sentiment === "正面" ? "positive" : item.sentiment === "负面" ? "negative" : "";
+      return `
+        <article class="alert-item">
+          <div class="alert-meta">
+            <span class="tag">${item.source}</span>
+            <span class="tag ${sentimentClass}">${item.sentiment}</span>
+            <span class="tag">强度 ${item.severity}</span>
+          </div>
+          <strong>${item.title}</strong>
+          <span>${item.action}</span>
+          <span>关联：${(item.matched || []).join("、") || "市场"}</span>
+        </article>
+      `;
+    })
+    .join("");
+}
+
 function render(data) {
   const forecastData = data.forecast;
   if (!forecastData.detailReturns) {
@@ -759,6 +812,7 @@ form.addEventListener("submit", async (event) => {
   setLoading();
   try {
     render(await loadFund(code));
+    renderMonitor(await loadMonitor(code));
   } catch (error) {
     setError(error.message || "分析失败，请稍后重试。");
   }
