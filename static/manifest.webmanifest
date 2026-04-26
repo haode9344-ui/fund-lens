@@ -1,7 +1,7 @@
 {
-  "name": "Fund Lens",
-  "short_name": "Fund Lens",
-  "description": "Alipay fund trend and related holdings analyzer.",
+  "name": "基金雷达",
+  "short_name": "基金雷达",
+  "description": "支付宝基金趋势和重仓影响分析。",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#f6f7fb",

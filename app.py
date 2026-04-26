@@ -182,21 +182,102 @@ def related_impact(holdings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def buy_view(forecast_data: dict[str, Any], impact: dict[str, Any]) -> dict[str, Any]:
+def load_market() -> dict[str, Any]:
+    url = (
+        "https://push2.eastmoney.com/api/qt/ulist.np/get"
+        "?fltt=2&secids=1.000001,0.399001,0.399006,1.000300&fields=f2,f3,f12,f14"
+    )
+    try:
+        payload = json.loads(fetch_text(url))
+        items = payload.get("data", {}).get("diff", [])
+    except Exception:
+        items = []
+    changes = [float(item.get("f3") or 0) for item in items]
+    average = statistics.fmean(changes) if changes else 0
+    label = "市场偏震荡"
+    if average > 0.4:
+        label = "市场偏强"
+    elif average < -0.4:
+        label = "市场偏弱"
+    return {
+        "label": label,
+        "averageChange": round(average, 2),
+        "indices": [
+            {
+                "name": item.get("f14"),
+                "code": item.get("f12"),
+                "changePct": item.get("f3"),
+                "price": item.get("f2"),
+            }
+            for item in items
+        ],
+    }
+
+
+def event_hints(impact: dict[str, Any]) -> list[str]:
+    names = "、".join(item.get("name", "") for item in impact.get("topIndustries", []))
+    if re.search(r"白酒|饮料|食品|消费", names):
+        return ["消费复苏强弱", "白酒批价变化", "节假日消费预期", "龙头公司财报"]
+    if re.search(r"半导体|芯片|电子|通信|计算机|软件|人工智能", names):
+        return ["科技政策", "AI 订单变化", "芯片景气度", "美股科技股波动"]
+    if re.search(r"医药|医疗|生物", names):
+        return ["医保政策", "创新药审批", "药企财报", "集采预期"]
+    if re.search(r"新能源|电池|光伏|电力设备", names):
+        return ["锂价变化", "装机需求", "海外关税", "龙头订单"]
+    if re.search(r"银行|证券|保险|金融", names):
+        return ["利率变化", "成交量", "政策预期", "地产信用"]
+    return ["大盘风险偏好", "行业政策", "重仓股财报", "资金流向"]
+
+
+def explanation(forecast_data: dict[str, Any], impact: dict[str, Any], market: dict[str, Any]) -> dict[str, str]:
+    market_text = market.get("label", "市场数据暂缺")
+    average = market.get("averageChange") or 0
+    if average:
+        market_text = f"{market_text}（主要指数均值 {average:+.2f}%）"
+    contribution = impact.get("todayContributionPct") or 0
+    if contribution > 0.25:
+        holding_text = f"重仓股今天贡献约 {contribution:+.2f}%"
+    elif contribution < -0.25:
+        holding_text = f"重仓股今天拖累约 {contribution:+.2f}%"
+    else:
+        holding_text = "重仓股影响不强"
+    if forecast_data["direction"] == "up":
+        move = f"偏涨：近 5/10/20 日动量偏正，{holding_text}。"
+    else:
+        move = f"偏跌：短期动量或市场环境偏弱，{holding_text}。"
+    return {
+        "market": market_text,
+        "move": move,
+        "events": "、".join(event_hints(impact)),
+    }
+
+
+def market_from_trend(forecast_data: dict[str, Any]) -> dict[str, Any]:
+    short_trend = forecast_data["lastReturnsPct"]["5d"] + forecast_data["lastReturnsPct"]["10d"]
+    label = "市场/基金风格偏震荡"
+    if short_trend > 1.2:
+        label = "市场/基金风格偏强"
+    elif short_trend < -1.2:
+        label = "市场/基金风格偏弱"
+    return {"label": label, "averageChange": round(short_trend / 2, 2), "indices": []}
+
+
+def buy_view(forecast_data: dict[str, Any], impact: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
     expected = forecast_data["expectedPct"]
     probability = forecast_data["probabilityUp"]
     drawdown = forecast_data["maxDrawdownPct"]
     contribution = impact.get("todayContributionPct") or 0
+    market_ok = (market.get("averageChange") or 0) > -0.6
 
-    if expected > 0.8 and probability >= 60 and contribution >= 0:
+    if expected > 0.8 and probability >= 60 and contribution >= 0 and market_ok:
         stance = "可以考虑小额分批"
-        reason = "短期动量和关联持仓偏正，但仍建议分批，避免一次买在波动高点。"
+        reason = "买进理由：短期趋势偏正、市场不弱、重仓持仓没有明显拖累；但仍建议分批。"
     elif expected < -0.5 or probability < 45 or contribution < -0.4:
         stance = "先别急着加仓"
-        reason = "短期估算或重仓关联资产偏弱，等回撤企稳、连续两三个交易日改善再看更稳。"
+        reason = "不急买理由：短期估算偏弱或持仓拖累明显，等连续两三个交易日改善再看。"
     else:
         stance = "观望或定投式少量"
-        reason = "信号不够单边，若你本来长期看好，可以只按计划小额定投，不建议冲动补仓。"
+        reason = "少量买进理由：没有明显单边信号，适合按计划小额定投，不适合一次性重仓。"
 
     risk = "高波动"
     if forecast_data["volatilityPct"] < 0.8 and drawdown > -8:
@@ -283,6 +364,10 @@ def load_fund(code: str) -> dict[str, Any]:
     forecast_data = forecast(forecast_points)
     holdings = enrich_holdings(load_holdings(code))
     impact = related_impact(holdings)
+    market = load_market()
+    if market.get("label") == "市场数据暂缺":
+        market = market_from_trend(forecast_data)
+    explain = explanation(forecast_data, impact, market)
 
     return {
         "code": fund_code,
@@ -294,7 +379,9 @@ def load_fund(code: str) -> dict[str, Any]:
         "forecast": forecast_data,
         "holdings": holdings,
         "impact": impact,
-        "buyView": buy_view(forecast_data, impact),
+        "market": market,
+        "explanation": explain,
+        "buyView": buy_view(forecast_data, impact, market),
         "disclaimer": "模型只基于历史净值的动量和波动率估算，不能保证未来收益，也不构成投资建议。",
     }
 

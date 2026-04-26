@@ -6,6 +6,7 @@ const holdingsPanel = document.querySelector("#holdingsPanel");
 const holdingsList = document.querySelector("#holdingsList");
 const impactBadge = document.querySelector("#impactBadge");
 const buyViewEl = document.querySelector("#buyView");
+const explainGrid = document.querySelector("#explainGrid");
 const chartPanel = document.querySelector("#chartPanel");
 const chart = document.querySelector("#chart");
 const latestDate = document.querySelector("#latestDate");
@@ -235,6 +236,30 @@ async function enrichHoldings(holdings) {
   });
 }
 
+async function loadMarket() {
+  const url = "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001,0.399006,1.000300&fields=f2,f3,f12,f14";
+  try {
+    const payload = await jsonp(url);
+    const items = payload?.data?.diff || [];
+    const averageChange = items.length ? mean(items.map((item) => Number(item.f3) || 0)) : 0;
+    let label = "市场偏震荡";
+    if (averageChange > 0.4) label = "市场偏强";
+    if (averageChange < -0.4) label = "市场偏弱";
+    return {
+      label,
+      averageChange: Math.round(averageChange * 100) / 100,
+      indices: items.map((item) => ({
+        name: item.f14,
+        code: item.f12,
+        changePct: item.f3,
+        price: item.f2,
+      })),
+    };
+  } catch {
+    return { label: "市场数据暂缺", averageChange: 0, indices: [] };
+  }
+}
+
 function relatedImpact(holdings) {
   const valid = holdings.filter((item) => typeof item.changePct === "number");
   const todayContributionPct =
@@ -256,18 +281,73 @@ function relatedImpact(holdings) {
   return { label, topHoldingExposurePct, todayContributionPct, topIndustries };
 }
 
-function makeBuyView(forecastData, impact) {
+function eventHints(impact) {
+  const names = impact.topIndustries.map((item) => item.name).join("、");
+  if (/白酒|饮料|食品|消费/.test(names)) {
+    return ["消费复苏强弱", "白酒批价变化", "节假日消费预期", "龙头公司财报"];
+  }
+  if (/半导体|芯片|电子|通信|计算机|软件|人工智能/.test(names)) {
+    return ["科技政策", "AI 订单变化", "芯片景气度", "美股科技股波动"];
+  }
+  if (/医药|医疗|生物/.test(names)) {
+    return ["医保政策", "创新药审批", "药企财报", "集采预期"];
+  }
+  if (/新能源|电池|光伏|电力设备/.test(names)) {
+    return ["锂价变化", "装机需求", "海外关税", "龙头订单"];
+  }
+  if (/银行|证券|保险|金融/.test(names)) {
+    return ["利率变化", "成交量", "政策预期", "地产信用"];
+  }
+  return ["大盘风险偏好", "行业政策", "重仓股财报", "资金流向"];
+}
+
+function explainMove(forecastData, impact, market) {
+  const direction = forecastData.direction === "up" ? "涨" : "跌";
+  const marketText = `${market.label}${market.averageChange ? `（主要指数均值 ${pct(market.averageChange)}）` : ""}`;
+  const holdingText =
+    impact.todayContributionPct > 0.25
+      ? `重仓股今天贡献约 ${pct(impact.todayContributionPct)}`
+      : impact.todayContributionPct < -0.25
+        ? `重仓股今天拖累约 ${pct(impact.todayContributionPct)}`
+        : "重仓股影响不强";
+  const reason =
+    forecastData.direction === "up"
+      ? `近 5/10/20 日动量偏正，${holdingText}。`
+      : `短期动量或市场环境偏弱，${holdingText}。`;
+  return {
+    market: marketText,
+    move: `偏${direction}：${reason}`,
+    events: eventHints(impact).join("、"),
+  };
+}
+
+function marketFromTrend(forecastData) {
+  const shortTrend = forecastData.lastReturnsPct["5d"] + forecastData.lastReturnsPct["10d"];
+  let label = "市场/基金风格偏震荡";
+  if (shortTrend > 1.2) label = "市场/基金风格偏强";
+  if (shortTrend < -1.2) label = "市场/基金风格偏弱";
+  return {
+    label,
+    averageChange: Math.round((shortTrend / 2) * 100) / 100,
+    indices: [],
+  };
+}
+
+function makeBuyView(forecastData, impact, market) {
   const expected = forecastData.expectedPct;
   const probability = forecastData.probabilityUp;
   const contribution = impact.todayContributionPct || 0;
+  const marketOk = market.averageChange > -0.6;
   let stance = "观望或定投式少量";
   let reason = "信号不够单边，若你本来长期看好，可以只按计划小额定投，不建议冲动补仓。";
-  if (expected > 0.8 && probability >= 60 && contribution >= 0) {
+  if (expected > 0.8 && probability >= 60 && contribution >= 0 && marketOk) {
     stance = "可以考虑小额分批";
-    reason = "短期动量和关联持仓偏正，但仍建议分批，避免一次买在波动高点。";
+    reason = "买进理由：短期趋势偏正、市场不弱、重仓持仓没有明显拖累；但仍建议分批。";
   } else if (expected < -0.5 || probability < 45 || contribution < -0.4) {
     stance = "先别急着加仓";
-    reason = "短期估算或重仓关联资产偏弱，等回撤企稳、连续两三个交易日改善再看更稳。";
+    reason = "不急买理由：短期估算偏弱或持仓拖累明显，等连续两三个交易日改善再看。";
+  } else {
+    reason = "少量买进理由：没有明显单边信号，适合按计划小额定投，不适合一次性重仓。";
   }
 
   let riskLevel = "高波动";
@@ -278,6 +358,7 @@ function makeBuyView(forecastData, impact) {
 
 async function loadStaticFund(code) {
   const fund = await loadFundScript(code);
+  let market = await loadMarket();
   let holdings = [];
   try {
     holdings = await enrichHoldings(await loadHoldings(code));
@@ -285,7 +366,9 @@ async function loadStaticFund(code) {
     holdings = [];
   }
   const forecastData = forecast(fund.history.slice(-180));
+  if (market.label === "市场数据暂缺") market = marketFromTrend(forecastData);
   const impact = relatedImpact(holdings);
+  const explanation = explainMove(forecastData, impact, market);
   return {
     code: fund.code,
     name: fund.name,
@@ -296,7 +379,9 @@ async function loadStaticFund(code) {
     forecast: forecastData,
     holdings,
     impact,
-    buyView: makeBuyView(forecastData, impact),
+    market,
+    explanation,
+    buyView: makeBuyView(forecastData, impact, market),
     disclaimer: "模型只基于历史净值、持仓和行情做统计估算，不能保证未来收益，也不构成投资建议。",
   };
 }
@@ -336,7 +421,7 @@ function render(data) {
         </p>
       </div>
       <aside class="forecast-box">
-        <p class="eyebrow">Estimated NAV</p>
+        <p class="eyebrow">估算净值</p>
         <div class="big">${forecastData.expectedValue}</div>
         <p class="sub">
           估算净值区间 ${forecastData.rangeValue[0]} 至 ${forecastData.rangeValue[1]}。
@@ -366,6 +451,13 @@ function render(data) {
     <span>${data.buyView.reason}</span>
     <small>风险：${data.buyView.riskLevel} · 前十大持仓占净值 ${data.impact.topHoldingExposurePct}% · ${industryText}</small>
   `;
+  explainGrid.innerHTML = [
+    { label: "市场环境", value: data.explanation?.market || "市场数据暂缺" },
+    { label: "涨跌原因", value: data.explanation?.move || "短期信号不足" },
+    { label: "影响事件", value: data.explanation?.events || "资金流向、行业政策、重仓股财报" },
+  ]
+    .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)
+    .join("");
   holdingsList.innerHTML = data.holdings
     .map((item) => {
       const direction = (item.changePct || 0) >= 0 ? "hot" : "cold";

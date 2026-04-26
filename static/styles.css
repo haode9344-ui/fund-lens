@@ -90,7 +90,6 @@ h2 {
 }
 
 .search,
-.install-card,
 .hero-result,
 .chart-panel,
 .notes {
@@ -105,25 +104,6 @@ h2 {
   display: grid;
   gap: 10px;
   padding: 14px;
-}
-
-.install-card {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  padding: 13px 14px;
-}
-
-.install-card strong {
-  color: var(--ink);
-  white-space: nowrap;
-}
-
-.install-card span {
-  line-height: 1.45;
-  text-align: right;
 }
 
 .search label {
@@ -293,6 +273,33 @@ h2 {
   line-height: 1.55;
 }
 
+.explain-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.explain {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.explain span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.explain strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
 .holdings-list {
   display: grid;
   gap: 10px;
@@ -382,15 +389,6 @@ h2 {
     grid-template-columns: 1fr;
   }
 
-  .install-card {
-    align-items: flex-start;
-    display: grid;
-  }
-
-  .install-card span {
-    text-align: left;
-  }
-
   .search button {
     min-height: 52px;
     width: 100%;
@@ -398,6 +396,10 @@ h2 {
 
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .explain-grid {
+    grid-template-columns: 1fr;
   }
 }
 
