@@ -166,6 +166,48 @@ function recentReview(points, impact, market) {
   }).reverse();
 }
 
+function todayAndAfterAnalysis(forecastData, impact, market, holdings) {
+  const leaders = holdings
+    .filter((item) => typeof item.changePct === "number")
+    .sort((a, b) => Math.abs(b.estimatedContributionPct || 0) - Math.abs(a.estimatedContributionPct || 0))
+    .slice(0, 3);
+  const leaderText = leaders.length
+    ? leaders
+        .map((item) => `${item.name}${pct(item.changePct || 0)}，贡献${pct(item.estimatedContributionPct || 0)}`)
+        .join("；")
+    : "重仓股实时数据暂缺，先按基金净值动量和市场风格判断";
+
+  const todayDirection =
+    impact.todayContributionPct > 0.25 || market.averageChange > 0.5
+      ? "今天偏正面"
+      : impact.todayContributionPct < -0.25 || market.averageChange < -0.5
+        ? "今天偏负面"
+        : "今天偏震荡";
+
+  const todayReason = `${todayDirection}：市场/风格为${market.label}，前十大持仓估算影响 ${pct(
+    impact.todayContributionPct || 0
+  )}。${leaderText}。`;
+
+  const afterDirection = forecastData.expectedPct >= 0 ? "今天过后偏涨" : "今天过后偏跌";
+  const afterReason =
+    forecastData.expectedPct >= 0
+      ? `后市看涨依据：5 日和 10 日动量合计 ${
+          forecastData.lastReturnsPct["5d"] + forecastData.lastReturnsPct["10d"] >= 0 ? "为正" : "接近修复"
+        }，若明天重仓股继续不拖累，净值更容易延续反弹。`
+      : `后市看跌依据：短期动量偏弱或波动区间下沿较大，若明天重仓股继续走弱，净值容易继续回撤。`;
+
+  const buyReason =
+    forecastData.expectedPct >= 0 && market.averageChange > -0.6
+      ? "买进原因：不是因为一定会涨，而是短线趋势没有破坏，可用小额分批换取反弹机会。"
+      : "暂缓买进原因：今天信号不够强，等明天确认重仓股止跌或指数转强更稳。";
+
+  return [
+    { title: "今天怎么看", reason: todayReason },
+    { title: "今天以后怎么看", reason: `${afterDirection}：${afterReason}` },
+    { title: "买进原因", reason: buyReason },
+  ];
+}
+
 function forecast(points, horizonDays = 5) {
   const returns = dailyReturns(points);
   const recent = returns.slice(-30);
@@ -498,7 +540,7 @@ async function loadStaticFund(code) {
     market,
     explanation,
     tomorrowDetail: tomorrowDeepDive(forecastData, impact, market, holdings),
-    review: recentReview(fund.history, impact, market),
+    review: todayAndAfterAnalysis(forecastData, impact, market, holdings),
     buyView: makeBuyView(forecastData, impact, market),
     disclaimer: "模型只基于历史净值、持仓和行情做统计估算，不能保证未来收益，也不构成投资建议。",
   };
@@ -541,7 +583,7 @@ function render(data) {
   }
   const marketData = data.market || marketFromTrend(forecastData);
   const tomorrowDetail = data.tomorrowDetail || tomorrowDeepDive(forecastData, data.impact, marketData, data.holdings || []);
-  const review = data.review || recentReview(data.history, data.impact, marketData);
+  const review = data.review || todayAndAfterAnalysis(forecastData, data.impact, marketData, data.holdings || []);
   const isUp = forecastData.direction === "up";
   const directionText = isUp ? "偏涨" : "偏跌";
   const actionColor = isUp ? "up" : "down";
@@ -585,7 +627,7 @@ function render(data) {
   tomorrowBadge.textContent = `${tomorrowDetail.direction} · 上涨概率 ${tomorrowDetail.probabilityUp}%`;
   tomorrowCard.innerHTML = `
     <strong>明天判断：${tomorrowDetail.direction}，预估 ${pct(tomorrowDetail.expectedPct)}</strong>
-    <p>常见波动区间 ${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}。${tomorrowDetail.conclusion}</p>
+    <p>这是今天以后最近一个交易日的判断。常见波动区间 ${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}。${tomorrowDetail.conclusion}</p>
     <div class="factor-row">
       <div class="factor"><span>看涨因素</span><b>${tomorrowDetail.bullish.slice(0, 3).join(" ") || "暂无明显看涨因素。"}</b></div>
       <div class="factor"><span>看跌风险</span><b>${tomorrowDetail.bearish.slice(0, 3).join(" ") || "暂无明显看跌因素。"}</b></div>
@@ -624,7 +666,7 @@ function render(data) {
   `;
   explainGrid.innerHTML = [
     { label: "市场环境", value: data.explanation?.market || "市场数据暂缺" },
-    { label: "涨跌原因", value: data.explanation?.move || "短期信号不足" },
+    { label: "今天以后原因", value: data.explanation?.move || "短期信号不足" },
     { label: "影响事件", value: data.explanation?.events || "资金流向、行业政策、重仓股财报" },
   ]
     .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)

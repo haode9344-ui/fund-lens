@@ -365,6 +365,65 @@ def recent_review(
     return list(reversed(rows))
 
 
+def today_and_after_analysis(
+    forecast_data: dict[str, Any],
+    impact: dict[str, Any],
+    market: dict[str, Any],
+    holdings: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    leaders = [
+        item
+        for item in holdings
+        if isinstance(item.get("changePct"), (int, float))
+    ]
+    leaders = sorted(leaders, key=lambda item: abs(item.get("estimatedContributionPct") or 0), reverse=True)[:3]
+    if leaders:
+        leader_text = "；".join(
+            f"{item.get('name')}{item.get('changePct'):+.2f}%，贡献{(item.get('estimatedContributionPct') or 0):+.2f}%"
+            for item in leaders
+        )
+    else:
+        leader_text = "重仓股实时数据暂缺，先按基金净值动量和市场风格判断"
+
+    contribution = impact.get("todayContributionPct") or 0
+    market_change = market.get("averageChange") or 0
+    if contribution > 0.25 or market_change > 0.5:
+        today_direction = "今天偏正面"
+    elif contribution < -0.25 or market_change < -0.5:
+        today_direction = "今天偏负面"
+    else:
+        today_direction = "今天偏震荡"
+
+    today_reason = (
+        f"{today_direction}：市场/风格为{market.get('label')}，"
+        f"前十大持仓估算影响 {contribution:+.2f}%。{leader_text}。"
+    )
+
+    if forecast_data.get("expectedPct", 0) >= 0:
+        after_direction = "今天过后偏涨"
+        after_reason = (
+            "后市看涨依据：短线趋势没有明显破坏，"
+            "若明天重仓股继续不拖累，净值更容易延续反弹。"
+        )
+    else:
+        after_direction = "今天过后偏跌"
+        after_reason = (
+            "后市看跌依据：短期动量偏弱或波动区间下沿较大，"
+            "若明天重仓股继续走弱，净值容易继续回撤。"
+        )
+
+    if forecast_data.get("expectedPct", 0) >= 0 and market_change > -0.6:
+        buy_reason = "买进原因：不是因为一定会涨，而是短线趋势没有破坏，可用小额分批换取反弹机会。"
+    else:
+        buy_reason = "暂缓买进原因：今天信号不够强，等明天确认重仓股止跌或指数转强更稳。"
+
+    return [
+        {"title": "今天怎么看", "reason": today_reason},
+        {"title": "今天以后怎么看", "reason": f"{after_direction}：{after_reason}"},
+        {"title": "买进原因", "reason": buy_reason},
+    ]
+
+
 def buy_view(forecast_data: dict[str, Any], impact: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
     expected = forecast_data["expectedPct"]
     probability = forecast_data["probabilityUp"]
@@ -506,7 +565,7 @@ def load_fund(code: str) -> dict[str, Any]:
         "market": market,
         "explanation": explain,
         "tomorrowDetail": tomorrow_detail(forecast_data, impact, market, holdings),
-        "review": recent_review(clean_points, impact, market),
+        "review": today_and_after_analysis(forecast_data, impact, market, holdings),
         "buyView": buy_view(forecast_data, impact, market),
         "disclaimer": "模型只基于历史净值的动量和波动率估算，不能保证未来收益，也不构成投资建议。",
     }
