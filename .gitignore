@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.idea/
+server.out.log
+server.err.log
+.DS_Store
+ios/build/

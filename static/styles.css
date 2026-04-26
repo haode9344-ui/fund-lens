@@ -1,0 +1,408 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7fb;
+  --ink: #16171d;
+  --muted: #6d7280;
+  --line: #dfe3eb;
+  --panel: rgba(255, 255, 255, 0.88);
+  --blue: #0a84ff;
+  --green: #248a3d;
+  --red: #d33829;
+  --amber: #b26a00;
+  --shadow: 0 18px 60px rgba(28, 35, 51, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    linear-gradient(135deg, rgba(10, 132, 255, 0.14), transparent 32%),
+    linear-gradient(225deg, rgba(36, 138, 61, 0.12), transparent 34%),
+    var(--bg);
+  color: var(--ink);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  width: min(100%, 1040px);
+  margin: 0 auto;
+  padding: max(20px, env(safe-area-inset-top)) 18px 36px;
+}
+
+.workspace {
+  display: grid;
+  gap: 18px;
+}
+
+.topbar {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 2px;
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0 0 5px;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(34px, 7vw, 68px);
+  letter-spacing: 0;
+  line-height: 0.94;
+}
+
+h2 {
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.status-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  min-width: 112px;
+  padding: 9px 12px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.search,
+.install-card,
+.hero-result,
+.chart-panel,
+.notes {
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(22px);
+}
+
+.search {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.install-card {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 13px 14px;
+}
+
+.install-card strong {
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.install-card span {
+  line-height: 1.45;
+  text-align: right;
+}
+
+.search label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.search-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.search input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 22px;
+  outline: none;
+  padding: 14px 15px;
+  width: 100%;
+}
+
+.search input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.12);
+}
+
+.search button {
+  align-items: center;
+  background: var(--blue);
+  border: 0;
+  border-radius: 8px;
+  color: white;
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: 800;
+  justify-content: center;
+  min-width: 92px;
+  padding: 0 18px;
+}
+
+.hero-result {
+  min-height: 210px;
+  overflow: hidden;
+  padding: 22px;
+}
+
+.muted-state {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  min-height: 160px;
+}
+
+.result-layout {
+  display: grid;
+  gap: 22px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
+}
+
+.fund-name {
+  font-size: clamp(24px, 5vw, 46px);
+  line-height: 1.04;
+  margin-top: 8px;
+}
+
+.direction {
+  font-size: clamp(52px, 12vw, 112px);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 0.92;
+  margin-top: 18px;
+}
+
+.direction.up {
+  color: var(--red);
+}
+
+.direction.down {
+  color: var(--green);
+}
+
+.confidence {
+  color: var(--muted);
+  line-height: 1.55;
+  margin-top: 16px;
+}
+
+.forecast-box {
+  align-self: end;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.forecast-box .big {
+  font-size: 38px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.forecast-box .sub {
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: 12px;
+}
+
+.metrics-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric {
+  background: rgba(255, 255, 255, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: 8px;
+  box-shadow: 0 10px 36px rgba(28, 35, 51, 0.08);
+  min-height: 104px;
+  padding: 14px;
+}
+
+.metric span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.metric strong {
+  font-size: 28px;
+  letter-spacing: 0;
+}
+
+.chart-panel,
+.holdings-panel,
+.notes {
+  padding: 18px;
+}
+
+.holdings-panel {
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(22px);
+}
+
+.buy-view {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 14px;
+}
+
+.buy-view strong {
+  font-size: 22px;
+}
+
+.buy-view span,
+.buy-view small {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.holdings-list {
+  display: grid;
+  gap: 10px;
+}
+
+.holding {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr auto;
+  padding: 12px 14px;
+}
+
+.holding strong,
+.holding span {
+  display: block;
+}
+
+.holding span,
+.holding-numbers span {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.holding-numbers {
+  text-align: right;
+}
+
+.holding-numbers b {
+  display: block;
+  font-size: 20px;
+}
+
+.hot {
+  color: var(--red);
+}
+
+.cold {
+  color: var(--green);
+}
+
+.panel-heading {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.panel-heading span,
+.notes {
+  color: var(--muted);
+}
+
+#chart {
+  display: block;
+  max-width: 100%;
+  width: 100%;
+}
+
+.notes {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .topbar,
+  .result-layout,
+  .panel-heading,
+  .holding {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .holding-numbers {
+    text-align: left;
+  }
+
+  .status-pill {
+    justify-self: start;
+  }
+
+  .search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .install-card {
+    align-items: flex-start;
+    display: grid;
+  }
+
+  .install-card span {
+    text-align: left;
+  }
+
+  .search button {
+    min-height: 52px;
+    width: 100%;
+  }
+
+  .metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+}

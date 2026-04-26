@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f6f7fb" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Fund Lens" />
+    <title>Fund Lens</title>
+    <link rel="manifest" href="/static/manifest.webmanifest" />
+    <link rel="icon" href="/static/icon-192.png" />
+    <link rel="apple-touch-icon" href="/static/icon-180.png" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Alipay Fund Analyzer</p>
+            <h1>Fund Lens</h1>
+          </div>
+          <div class="status-pill" id="sourceBadge">等待基金代码</div>
+        </header>
+
+        <form class="search" id="fundForm">
+          <label for="fundCode">基金代码</label>
+          <div class="search-row">
+            <input
+              id="fundCode"
+              name="fundCode"
+              inputmode="numeric"
+              maxlength="6"
+              autocomplete="off"
+              placeholder="例如 161725"
+              required
+            />
+            <button type="submit" aria-label="分析基金">
+              <span>分析</span>
+            </button>
+          </div>
+        </form>
+
+        <section class="install-card">
+          <strong>iPhone 安装</strong>
+          <span>Safari 打开本页，点分享按钮，选择“添加到主屏幕”。</span>
+        </section>
+
+        <section class="hero-result" id="summary">
+          <div class="muted-state">
+            <p>在支付宝基金详情页复制 6 位基金代码，粘贴到上方即可分析。</p>
+          </div>
+        </section>
+
+        <section class="metrics-grid" id="metrics" hidden></section>
+
+        <section class="holdings-panel" id="holdingsPanel" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Related Products</p>
+              <h2>重仓关联影响</h2>
+            </div>
+            <span id="impactBadge"></span>
+          </div>
+          <div class="buy-view" id="buyView"></div>
+          <div class="holdings-list" id="holdingsList"></div>
+        </section>
+
+        <section class="chart-panel" id="chartPanel" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Net Value</p>
+              <h2>最近 90 个净值点</h2>
+            </div>
+            <span id="latestDate"></span>
+          </div>
+          <canvas id="chart" height="220"></canvas>
+        </section>
+
+        <section class="notes" id="notes" hidden></section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
