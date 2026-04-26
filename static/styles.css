@@ -91,6 +91,7 @@ h2 {
 
 .search,
 .hero-result,
+.analysis-panel,
 .chart-panel,
 .notes {
   background: var(--panel);
@@ -241,17 +242,111 @@ h2 {
 }
 
 .chart-panel,
+.analysis-panel,
 .holdings-panel,
 .notes {
   padding: 18px;
 }
 
+.analysis-panel,
 .holdings-panel {
   background: var(--panel);
   border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: 8px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(22px);
+}
+
+.tomorrow-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 14px;
+}
+
+.tomorrow-card strong {
+  font-size: 22px;
+}
+
+.tomorrow-card p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.factor-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.factor {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.factor span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.factor b {
+  display: block;
+  line-height: 1.4;
+}
+
+.detail-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.detail-grid details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.detail-grid summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.date-return {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.review-list {
+  display: grid;
+  gap: 10px;
+}
+
+.review-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.review-item strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.review-item span {
+  color: var(--muted);
+  display: block;
+  line-height: 1.45;
 }
 
 .buy-view {
@@ -398,6 +493,8 @@ h2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .detail-grid,
+  .factor-row,
   .explain-grid {
     grid-template-columns: 1fr;
   }

@@ -77,6 +77,23 @@ def max_drawdown(points: list[dict[str, Any]]) -> float:
     return worst
 
 
+def return_details(points: list[dict[str, Any]], days: int) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    start = max(1, len(points) - days)
+    for index in range(start, len(points)):
+        previous = float(points[index - 1]["y"])
+        current = float(points[index]["y"])
+        change = (current / previous - 1) if previous else 0
+        details.append(
+            {
+                "date": points[index]["x"],
+                "value": round(current, 4),
+                "changePct": round(change * 100, 2),
+            }
+        )
+    return details
+
+
 def strip_tags(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<.*?>", "", unescape(value))).strip()
 
@@ -262,6 +279,92 @@ def market_from_trend(forecast_data: dict[str, Any]) -> dict[str, Any]:
     return {"label": label, "averageChange": round(short_trend / 2, 2), "indices": []}
 
 
+def tomorrow_detail(
+    forecast_data: dict[str, Any],
+    impact: dict[str, Any],
+    market: dict[str, Any],
+    holdings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    tomorrow = forecast_data.get("tomorrow", {})
+    expected = tomorrow.get("expectedPct", 0)
+    direction = "偏涨" if expected >= 0 else "偏跌"
+    top_holding = next((item for item in holdings if isinstance(item.get("changePct"), (int, float))), None)
+    industry = impact.get("topIndustries", [{}])[0].get("name", "重仓行业") if impact.get("topIndustries") else "重仓行业"
+    bullish: list[str] = []
+    bearish: list[str] = []
+
+    if forecast_data["lastReturnsPct"]["5d"] > 0:
+        bullish.append(f"近 5 日累计 {forecast_data['lastReturnsPct']['5d']:+.2f}%，短线动量还在。")
+    else:
+        bearish.append(f"近 5 日累计 {forecast_data['lastReturnsPct']['5d']:+.2f}%，短线动量偏弱。")
+
+    market_change = market.get("averageChange") or 0
+    if market_change > 0.4:
+        bullish.append(f"大盘/风格偏强，指数均值 {market_change:+.2f}%。")
+    elif market_change < -0.4:
+        bearish.append(f"大盘/风格偏弱，指数均值 {market_change:+.2f}%。")
+    else:
+        bullish.append("大盘没有明显拖累，明天主要看重仓股表现。")
+
+    contribution = impact.get("todayContributionPct") or 0
+    if contribution > 0.25:
+        bullish.append(f"前十大持仓估算贡献 {contribution:+.2f}%。")
+    elif contribution < -0.25:
+        bearish.append(f"前十大持仓估算拖累 {contribution:+.2f}%。")
+    else:
+        bearish.append("重仓股今天没有形成强推动，明天需要确认延续性。")
+
+    if top_holding:
+        line = f"{top_holding.get('name')} 今日 {top_holding.get('changePct'):+.2f}%，它对 {industry} 情绪影响较大。"
+        if (top_holding.get("changePct") or 0) >= 0:
+            bullish.append(line)
+        else:
+            bearish.append(line)
+
+    conclusion = (
+        "明天更像小幅偏涨或震荡上行，不适合追高重仓，适合小额分批观察。"
+        if direction == "偏涨"
+        else "明天更像偏弱或震荡回撤，先等重仓股止跌和市场情绪改善。"
+    )
+    return {
+        "direction": direction,
+        "probabilityUp": tomorrow.get("probabilityUp", forecast_data.get("probabilityUp")),
+        "expectedPct": expected,
+        "rangePct": tomorrow.get("rangePct", []),
+        "bullish": bullish,
+        "bearish": bearish,
+        "conclusion": conclusion,
+    }
+
+
+def recent_review(
+    clean_points: list[dict[str, Any]],
+    impact: dict[str, Any],
+    market: dict[str, Any],
+) -> list[dict[str, Any]]:
+    industry = impact.get("topIndustries", [{}])[0].get("name", "当前重仓行业") if impact.get("topIndustries") else "当前重仓行业"
+    market_change = market.get("averageChange") or 0
+    market_reason = "大盘震荡，主要看重仓行业和个股表现。"
+    if market_change > 0.4:
+        market_reason = "大盘环境偏强，对基金有托底。"
+    elif market_change < -0.4:
+        market_reason = "大盘环境偏弱，容易放大回撤。"
+    rows: list[dict[str, Any]] = []
+    for previous, current in zip(clean_points[-6:-1], clean_points[-5:]):
+        change = (current["value"] / previous["value"] - 1) * 100 if previous["value"] else 0
+        direction = "上涨" if change >= 0 else "下跌"
+        base = "净值抬升，说明当日底层持仓整体贡献偏正。" if change >= 0 else "净值回落，说明当日底层持仓整体承压。"
+        rows.append(
+            {
+                "date": current["date"],
+                "changePct": round(change, 2),
+                "title": f"{current['date']} {direction} {change:+.2f}%",
+                "reason": f"{base}{market_reason}重点观察 {industry}、资金流向和龙头股公告。",
+            }
+        )
+    return list(reversed(rows))
+
+
 def buy_view(forecast_data: dict[str, Any], impact: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
     expected = forecast_data["expectedPct"]
     probability = forecast_data["probabilityUp"]
@@ -314,6 +417,9 @@ def forecast(points: list[dict[str, Any]], horizon: int = 5) -> dict[str, Any]:
     expected_value = last_value * (1 + expected_change)
     lower_value = last_value * (1 + expected_change - interval)
     upper_value = last_value * (1 + expected_change + interval)
+    tomorrow_expected = daily_expected
+    tomorrow_interval = 0.95 * volatility
+    tomorrow_prob = 1 / (1 + math.exp(-(tomorrow_expected / max(tomorrow_interval / 2, 0.0001))))
 
     return {
         "horizonDays": horizon,
@@ -332,6 +438,24 @@ def forecast(points: list[dict[str, Any]], horizon: int = 5) -> dict[str, Any]:
             "5d": round(sum(last_5) * 100, 2),
             "10d": round(sum(last_10) * 100, 2),
             "20d": round(sum(last_20) * 100, 2),
+        },
+        "movingAverage": {
+            "ma5": round(moving_average([float(p["y"]) for p in points], 5) or 0, 4),
+            "ma10": round(moving_average([float(p["y"]) for p in points], 10) or 0, 4),
+            "ma20": round(moving_average([float(p["y"]) for p in points], 20) or 0, 4),
+        },
+        "detailReturns": {
+            "5d": return_details(points, 5),
+            "10d": return_details(points, 10),
+            "20d": return_details(points, 20),
+        },
+        "tomorrow": {
+            "expectedPct": round(tomorrow_expected * 100, 2),
+            "rangePct": [
+                round((tomorrow_expected - tomorrow_interval) * 100, 2),
+                round((tomorrow_expected + tomorrow_interval) * 100, 2),
+            ],
+            "probabilityUp": round(tomorrow_prob * 100, 1),
         },
     }
 
@@ -381,6 +505,8 @@ def load_fund(code: str) -> dict[str, Any]:
         "impact": impact,
         "market": market,
         "explanation": explain,
+        "tomorrowDetail": tomorrow_detail(forecast_data, impact, market, holdings),
+        "review": recent_review(clean_points, impact, market),
         "buyView": buy_view(forecast_data, impact, market),
         "disclaimer": "模型只基于历史净值的动量和波动率估算，不能保证未来收益，也不构成投资建议。",
     }

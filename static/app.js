@@ -2,6 +2,11 @@ const form = document.querySelector("#fundForm");
 const input = document.querySelector("#fundCode");
 const summary = document.querySelector("#summary");
 const metrics = document.querySelector("#metrics");
+const analysisPanel = document.querySelector("#analysisPanel");
+const tomorrowBadge = document.querySelector("#tomorrowBadge");
+const tomorrowCard = document.querySelector("#tomorrowCard");
+const detailGrid = document.querySelector("#detailGrid");
+const reviewList = document.querySelector("#reviewList");
 const holdingsPanel = document.querySelector("#holdingsPanel");
 const holdingsList = document.querySelector("#holdingsList");
 const impactBadge = document.querySelector("#impactBadge");
@@ -19,6 +24,7 @@ const jsonpPrefix = "fundLensJsonp";
 function setLoading() {
   summary.innerHTML = `<div class="muted-state"><p>正在抓取公开净值、重仓持仓和行情数据...</p></div>`;
   metrics.hidden = true;
+  analysisPanel.hidden = true;
   holdingsPanel.hidden = true;
   chartPanel.hidden = true;
   notes.hidden = true;
@@ -28,6 +34,7 @@ function setLoading() {
 function setError(message) {
   summary.innerHTML = `<div class="muted-state"><p>${message}</p></div>`;
   metrics.hidden = true;
+  analysisPanel.hidden = true;
   holdingsPanel.hidden = true;
   chartPanel.hidden = true;
   notes.hidden = true;
@@ -115,6 +122,50 @@ function maxDrawdown(points) {
   return worst;
 }
 
+function returnDetails(points, days) {
+  const start = Math.max(1, points.length - days);
+  const details = [];
+  for (let i = start; i < points.length; i += 1) {
+    const previous = points[i - 1];
+    const current = points[i];
+    const changePct = previous.value > 0 ? (current.value / previous.value - 1) * 100 : 0;
+    details.push({
+      date: current.date,
+      value: current.value,
+      changePct: Math.round(changePct * 100) / 100,
+    });
+  }
+  return details;
+}
+
+function movingAverageValue(points, days) {
+  const values = points.slice(-days).map((item) => item.value);
+  return values.length ? mean(values) : 0;
+}
+
+function recentReview(points, impact, market) {
+  const details = returnDetails(points, 5);
+  const industry = impact.topIndustries?.[0]?.name || "当前重仓行业";
+  return details.map((item) => {
+    const direction = item.changePct >= 0 ? "上涨" : "下跌";
+    const baseReason =
+      item.changePct >= 0
+        ? `净值抬升，说明当日底层持仓整体贡献偏正。`
+        : `净值回落，说明当日底层持仓整体承压。`;
+    const marketReason =
+      market.averageChange > 0.4
+        ? "大盘环境偏强，对基金有托底。"
+        : market.averageChange < -0.4
+          ? "大盘环境偏弱，容易放大回撤。"
+          : "大盘震荡，主要看重仓行业和个股表现。";
+    return {
+      ...item,
+      title: `${item.date} ${direction} ${pct(item.changePct)}`,
+      reason: `${baseReason}${marketReason}重点观察 ${industry}、资金流向和龙头股公告。`,
+    };
+  }).reverse();
+}
+
 function forecast(points, horizonDays = 5) {
   const returns = dailyReturns(points);
   const recent = returns.slice(-30);
@@ -131,6 +182,8 @@ function forecast(points, horizonDays = 5) {
   const interval = 1.15 * volatility * Math.sqrt(horizonDays);
   const probabilityUp = 1 / (1 + Math.exp(-(expectedChange / Math.max(interval / 2, 0.0001))));
   const lastValue = points.at(-1).value;
+  const tomorrowExpected = dailyExpected;
+  const tomorrowInterval = 0.95 * volatility;
 
   return {
     horizonDays,
@@ -152,6 +205,24 @@ function forecast(points, horizonDays = 5) {
       "5d": Math.round(last5.reduce((sum, value) => sum + value, 0) * 10000) / 100,
       "10d": Math.round(last10.reduce((sum, value) => sum + value, 0) * 10000) / 100,
       "20d": Math.round(last20.reduce((sum, value) => sum + value, 0) * 10000) / 100,
+    },
+    movingAverage: {
+      ma5: Math.round(movingAverageValue(points, 5) * 10000) / 10000,
+      ma10: Math.round(movingAverageValue(points, 10) * 10000) / 10000,
+      ma20: Math.round(movingAverageValue(points, 20) * 10000) / 10000,
+    },
+    detailReturns: {
+      "5d": returnDetails(points, 5),
+      "10d": returnDetails(points, 10),
+      "20d": returnDetails(points, 20),
+    },
+    tomorrow: {
+      expectedPct: Math.round(tomorrowExpected * 10000) / 100,
+      rangePct: [
+        Math.round((tomorrowExpected - tomorrowInterval) * 10000) / 100,
+        Math.round((tomorrowExpected + tomorrowInterval) * 10000) / 100,
+      ],
+      probabilityUp: Math.round((1 / (1 + Math.exp(-(tomorrowExpected / Math.max(tomorrowInterval / 2, 0.0001))))) * 1000) / 10,
     },
   };
 }
@@ -321,6 +392,51 @@ function explainMove(forecastData, impact, market) {
   };
 }
 
+function tomorrowDeepDive(forecastData, impact, market, holdings) {
+  const tomorrow = forecastData.tomorrow || {
+    expectedPct: forecastData.expectedPct / Math.max(forecastData.horizonDays, 1),
+    rangePct: [forecastData.rangePct[0] / Math.max(forecastData.horizonDays, 1), forecastData.rangePct[1] / Math.max(forecastData.horizonDays, 1)],
+    probabilityUp: forecastData.probabilityUp,
+  };
+  const direction = tomorrow.expectedPct >= 0 ? "偏涨" : "偏跌";
+  const topHolding = holdings.find((item) => typeof item.changePct === "number");
+  const industry = impact.topIndustries?.[0]?.name || "重仓行业";
+  const bullish = [];
+  const bearish = [];
+
+  if (forecastData.lastReturnsPct["5d"] > 0) bullish.push(`近 5 日累计 ${pct(forecastData.lastReturnsPct["5d"])}，短线动量还在。`);
+  else bearish.push(`近 5 日累计 ${pct(forecastData.lastReturnsPct["5d"])}，短线动量偏弱。`);
+
+  if (market.averageChange > 0.4) bullish.push(`大盘/风格偏强，指数均值 ${pct(market.averageChange)}。`);
+  else if (market.averageChange < -0.4) bearish.push(`大盘/风格偏弱，指数均值 ${pct(market.averageChange)}。`);
+  else bullish.push("大盘没有明显拖累，明天主要看重仓股表现。");
+
+  if (impact.todayContributionPct > 0.25) bullish.push(`前十大持仓估算贡献 ${pct(impact.todayContributionPct)}。`);
+  else if (impact.todayContributionPct < -0.25) bearish.push(`前十大持仓估算拖累 ${pct(impact.todayContributionPct)}。`);
+  else bearish.push("重仓股今天没有形成强推动，明天需要确认延续性。");
+
+  if (topHolding) {
+    const line = `${topHolding.name} 今日 ${pct(topHolding.changePct || 0)}，它对 ${industry} 情绪影响较大。`;
+    if ((topHolding.changePct || 0) >= 0) bullish.push(line);
+    else bearish.push(line);
+  }
+
+  const conclusion =
+    direction === "偏涨"
+      ? "明天更像小幅偏涨或震荡上行，不适合追高重仓，适合小额分批观察。"
+      : "明天更像偏弱或震荡回撤，先等重仓股止跌和市场情绪改善。";
+
+  return {
+    direction,
+    probabilityUp: tomorrow.probabilityUp,
+    expectedPct: tomorrow.expectedPct,
+    rangePct: tomorrow.rangePct,
+    bullish,
+    bearish,
+    conclusion,
+  };
+}
+
 function marketFromTrend(forecastData) {
   const shortTrend = forecastData.lastReturnsPct["5d"] + forecastData.lastReturnsPct["10d"];
   let label = "市场/基金风格偏震荡";
@@ -381,6 +497,8 @@ async function loadStaticFund(code) {
     impact,
     market,
     explanation,
+    tomorrowDetail: tomorrowDeepDive(forecastData, impact, market, holdings),
+    review: recentReview(fund.history, impact, market),
     buyView: makeBuyView(forecastData, impact, market),
     disclaimer: "模型只基于历史净值、持仓和行情做统计估算，不能保证未来收益，也不构成投资建议。",
   };
@@ -404,6 +522,26 @@ async function loadFund(code) {
 
 function render(data) {
   const forecastData = data.forecast;
+  if (!forecastData.detailReturns) {
+    forecastData.detailReturns = {
+      "5d": returnDetails(data.history, 5),
+      "10d": returnDetails(data.history, 10),
+      "20d": returnDetails(data.history, 20),
+    };
+  }
+  if (!forecastData.tomorrow) {
+    forecastData.tomorrow = {
+      expectedPct: forecastData.expectedPct / Math.max(forecastData.horizonDays, 1),
+      rangePct: [
+        forecastData.rangePct[0] / Math.max(forecastData.horizonDays, 1),
+        forecastData.rangePct[1] / Math.max(forecastData.horizonDays, 1),
+      ],
+      probabilityUp: forecastData.probabilityUp,
+    };
+  }
+  const marketData = data.market || marketFromTrend(forecastData);
+  const tomorrowDetail = data.tomorrowDetail || tomorrowDeepDive(forecastData, data.impact, marketData, data.holdings || []);
+  const review = data.review || recentReview(data.history, data.impact, marketData);
   const isUp = forecastData.direction === "up";
   const directionText = isUp ? "偏涨" : "偏跌";
   const actionColor = isUp ? "up" : "down";
@@ -442,6 +580,39 @@ function render(data) {
     metric("最新日期", data.latest.date.slice(5)),
     metric("预测天数", `${forecastData.horizonDays} 天`),
   ].join("");
+
+  analysisPanel.hidden = false;
+  tomorrowBadge.textContent = `${tomorrowDetail.direction} · 上涨概率 ${tomorrowDetail.probabilityUp}%`;
+  tomorrowCard.innerHTML = `
+    <strong>明天判断：${tomorrowDetail.direction}，预估 ${pct(tomorrowDetail.expectedPct)}</strong>
+    <p>常见波动区间 ${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}。${tomorrowDetail.conclusion}</p>
+    <div class="factor-row">
+      <div class="factor"><span>看涨因素</span><b>${tomorrowDetail.bullish.slice(0, 3).join(" ") || "暂无明显看涨因素。"}</b></div>
+      <div class="factor"><span>看跌风险</span><b>${tomorrowDetail.bearish.slice(0, 3).join(" ") || "暂无明显看跌因素。"}</b></div>
+    </div>
+  `;
+  detailGrid.innerHTML = [
+    { key: "5d", label: "近 5 日", total: forecastData.lastReturnsPct["5d"] },
+    { key: "10d", label: "近 10 日", total: forecastData.lastReturnsPct["10d"] },
+    { key: "20d", label: "近 20 日", total: forecastData.lastReturnsPct["20d"] },
+  ]
+    .map((group) => `
+      <details>
+        <summary>${group.label} ${pct(group.total)}</summary>
+        ${(forecastData.detailReturns[group.key] || [])
+          .map((item) => `<div class="date-return"><span>${item.date}</span><b class="${item.changePct >= 0 ? "hot" : "cold"}">${pct(item.changePct)}</b></div>`)
+          .join("")}
+      </details>
+    `)
+    .join("");
+  reviewList.innerHTML = review
+    .map((item) => `
+      <article class="review-item">
+        <strong>${item.title}</strong>
+        <span>${item.reason}</span>
+      </article>
+    `)
+    .join("");
 
   holdingsPanel.hidden = false;
   impactBadge.textContent = `${data.impact.label} · ${pct(data.impact.todayContributionPct)}`;
