@@ -1,14 +1,14 @@
-const CACHE_NAME = "fund-lens-v2";
+const CACHE_NAME = "fund-lens-v5";
 const APP_ASSETS = [
   "/",
-  "/static/index.html",
-  "/static/styles.css",
-  "/static/app.js",
-  "/static/manifest.webmanifest",
-  "/static/icon.svg",
-  "/static/icon-180.png",
-  "/static/icon-192.png",
-  "/static/icon-512.png",
+  "index.html",
+  "styles.css",
+  "app.js?v=5",
+  "manifest.webmanifest",
+  "icon.svg",
+  "icon-180.png",
+  "icon-192.png",
+  "icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {

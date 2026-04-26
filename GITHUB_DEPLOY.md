@@ -1,6 +1,36 @@
 # 用 GitHub 部署 Fund Lens
 
-可以用 GitHub，但 GitHub 本身主要负责保存代码。Fund Lens 需要 Python 后端上网抓基金数据，所以推荐：
+可以只用 GitHub Pages。现在前端已经支持纯网页模式，会直接读取东方财富/天天基金公开脚本数据，不需要 Python 后端也能做基础分析。
+
+## 只用 GitHub Pages
+
+1. 打开 GitHub 仓库 `haode9344-ui/fund-lens`。
+2. 进入 `Settings`。
+3. 左侧点 `Pages`。
+4. `Build and deployment` 里选择：
+
+```text
+Source: Deploy from a branch
+Branch: main
+Folder: / (root)
+```
+
+5. 点 `Save`。
+6. 等 1-3 分钟，GitHub 会给你一个网址，通常是：
+
+```text
+https://haode9344-ui.github.io/fund-lens/
+```
+
+7. iPhone Safari 打开这个网址，再点“分享”->“添加到主屏幕”。
+
+## GitHub Pages 的限制
+
+- 纯 GitHub Pages 不能运行 Python 后端。
+- 基金净值预测可以用。
+- 重仓股/实时行情如果被数据源限制，可能会显示不完整。
+
+如果想数据更稳定，推荐：
 
 ```text
 GitHub 仓库 -> Render 自动部署 -> iPhone Safari 添加到主屏幕
@@ -50,4 +80,4 @@ https://fund-lens.onrender.com
 
 ## GitHub Pages 可以吗？
 
-不建议只用 GitHub Pages。GitHub Pages 只能放静态页面，不能稳定运行 Python 后端，也不能替你实时抓基金净值、重仓股和股票行情。
+可以。现在已经兼容 GitHub Pages。只是它没有后端，稳定性比 Render 云端版弱一点。

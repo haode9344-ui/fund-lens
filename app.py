@@ -310,6 +310,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def translate_path(self, path: str) -> str:
+        path = path.split("?", 1)[0].split("#", 1)[0]
         if path.startswith("/static/"):
             return str(ROOT / path.lstrip("/"))
         return str(STATIC / "index.html")

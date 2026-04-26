@@ -24,6 +24,7 @@ http://127.0.0.1:8765
 ## 苹果设备
 
 - iPhone Safari 打开服务地址后，可以用“分享”->“添加到主屏幕”安装为 PWA。
+- 只用 GitHub Pages 也可以运行基础分析，打开仓库的 Pages 地址即可。
 - `ios/` 目录提供 SwiftUI 自签模板。Windows 不能生成 IPA，拿到 Mac 上用 Xcode 新建 iOS App 后替换源码即可签名安装。
 - 如果要电脑关机后手机也能用，需要部署到云端。见 `DEPLOY.md`。
 
