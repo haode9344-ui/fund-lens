@@ -5,10 +5,12 @@ import math
 import os
 import re
 import statistics
+import threading
 import time
 import urllib.error
 import urllib.request
 import urllib.parse
+import webbrowser
 from datetime import datetime
 from html import unescape
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -286,6 +288,49 @@ def market_from_trend(forecast_data: dict[str, Any]) -> dict[str, Any]:
     return {"label": label, "averageChange": round(short_trend / 2, 2), "indices": []}
 
 
+def classify_tomorrow(forecast_data: dict[str, Any], impact: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
+    tomorrow = forecast_data.get("tomorrow", {})
+    expected = tomorrow.get("expectedPct", 0) or 0
+    probability = tomorrow.get("probabilityUp", forecast_data.get("probabilityUp", 50)) or 50
+    market_change = market.get("averageChange") or 0
+    contribution = impact.get("todayContributionPct") or 0
+    score = 0
+    if expected > 0.25:
+        score += 1
+    if expected < -0.25:
+        score -= 1
+    if probability > 58:
+        score += 1
+    if probability < 42:
+        score -= 1
+    if market_change > 0.5:
+        score += 1
+    if market_change < -0.5:
+        score -= 1
+    if contribution > 0.25:
+        score += 1
+    if contribution < -0.25:
+        score -= 1
+
+    direction = "震荡"
+    if score >= 2:
+        direction = "偏涨"
+    elif score == 1:
+        direction = "震荡偏涨"
+    elif score == -1:
+        direction = "震荡偏弱"
+    elif score <= -2:
+        direction = "偏跌"
+
+    confidence = "中"
+    volatility = forecast_data.get("volatilityPct") or 0
+    if volatility > 1.5 or abs(expected) < volatility * 0.35:
+        confidence = "低"
+    if abs(score) >= 3 and volatility <= 1.2:
+        confidence = "较高"
+    return {"direction": direction, "confidence": confidence, "score": score}
+
+
 def tomorrow_detail(
     forecast_data: dict[str, Any],
     impact: dict[str, Any],
@@ -294,7 +339,8 @@ def tomorrow_detail(
 ) -> dict[str, Any]:
     tomorrow = forecast_data.get("tomorrow", {})
     expected = tomorrow.get("expectedPct", 0)
-    direction = "偏涨" if expected >= 0 else "偏跌"
+    signal = classify_tomorrow(forecast_data, impact, market)
+    direction = signal["direction"]
     top_holding = next((item for item in holdings if isinstance(item.get("changePct"), (int, float))), None)
     industry = impact.get("topIndustries", [{}])[0].get("name", "重仓行业") if impact.get("topIndustries") else "重仓行业"
     bullish: list[str] = []
@@ -328,13 +374,18 @@ def tomorrow_detail(
         else:
             bearish.append(line)
 
-    conclusion = (
-        "明天更像小幅偏涨或震荡上行，不适合追高重仓，适合小额分批观察。"
-        if direction == "偏涨"
-        else "明天更像偏弱或震荡回撤，先等重仓股止跌和市场情绪改善。"
-    )
+    conclusion = "明天不确定性较高，更适合等盘中重仓股和指数方向确认。"
+    if direction == "偏涨":
+        conclusion = "明天更像小幅偏涨或震荡上行，不适合追高重仓，适合小额分批观察。"
+    elif direction == "震荡偏涨":
+        conclusion = "明天有反弹倾向，但信号不强，适合观察或很小额分批。"
+    elif direction == "震荡偏弱":
+        conclusion = "明天偏弱震荡，先别急着加仓，等重仓股止跌更稳。"
+    elif direction == "偏跌":
+        conclusion = "明天更像偏弱或震荡回撤，先等重仓股止跌和市场情绪改善。"
     return {
         "direction": direction,
+        "confidence": signal["confidence"],
         "probabilityUp": tomorrow.get("probabilityUp", forecast_data.get("probabilityUp")),
         "expectedPct": expected,
         "rangePct": tomorrow.get("rangePct", []),
@@ -696,9 +747,15 @@ def load_fund(code: str) -> dict[str, Any]:
     forecast_points = [{"x": p["date"], "y": p["value"]} for p in clean_points[-180:]]
 
     forecast_data = forecast(forecast_points)
-    holdings = enrich_holdings(load_holdings(code))
+    try:
+        holdings = enrich_holdings(load_holdings(code))
+    except Exception:
+        holdings = []
     impact = related_impact(holdings)
-    market = load_market()
+    try:
+        market = load_market()
+    except Exception:
+        market = market_from_trend(forecast_data)
     if market.get("label") == "市场数据暂缺":
         market = market_from_trend(forecast_data)
     explain = explanation(forecast_data, impact, market)
@@ -724,6 +781,7 @@ def load_fund(code: str) -> dict[str, Any]:
 
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
+        parsed = urllib.parse.urlsplit(self.path)
         if self.path.startswith("/api/fund/"):
             code = self.path.rsplit("/", 1)[-1].split("?", 1)[0]
             self.send_json_response(lambda: load_fund(code))
@@ -732,14 +790,22 @@ class Handler(SimpleHTTPRequestHandler):
             code = self.path.rsplit("/", 1)[-1].split("?", 1)[0]
             self.send_json_response(lambda: load_monitor(code))
             return
-        if self.path == "/":
-            self.path = "/static/index.html"
+        if parsed.path == "/":
+            target = "/static/index.html"
+            if parsed.query:
+                target += f"?{parsed.query}"
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.end_headers()
+            return
         return super().do_GET()
 
     def translate_path(self, path: str) -> str:
         path = path.split("?", 1)[0].split("#", 1)[0]
         if path.startswith("/static/"):
             return str(ROOT / path.lstrip("/"))
+        if (STATIC / path.lstrip("/")).exists():
+            return str(STATIC / path.lstrip("/"))
         return str(STATIC / "index.html")
 
     def send_json_response(self, producer) -> None:
@@ -764,8 +830,11 @@ class Handler(SimpleHTTPRequestHandler):
 def main() -> None:
     port = int(os.environ.get("PORT", "8765"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"Fund Lens is running at http://127.0.0.1:{port}")
-    print(f"On iPhone, open http://<your-computer-lan-ip>:{port} in Safari.")
+    local_url = f"http://127.0.0.1:{port}"
+    print(f"Fund Lens is running at {local_url}")
+    print("Keep this window open while using local monitor.")
+    if os.environ.get("FUND_LENS_OPEN_BROWSER") == "1":
+        threading.Timer(1.2, lambda: webbrowser.open(local_url)).start()
     server.serve_forever()
 
 

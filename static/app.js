@@ -440,13 +440,43 @@ function explainMove(forecastData, impact, market) {
   };
 }
 
+function classifyTomorrow(forecastData, impact, market) {
+  const tomorrow = forecastData.tomorrow || {
+    expectedPct: forecastData.expectedPct / Math.max(forecastData.horizonDays, 1),
+    probabilityUp: forecastData.probabilityUp,
+  };
+  let score = 0;
+  if (tomorrow.expectedPct > 0.25) score += 1;
+  if (tomorrow.expectedPct < -0.25) score -= 1;
+  if (tomorrow.probabilityUp > 58) score += 1;
+  if (tomorrow.probabilityUp < 42) score -= 1;
+  if ((market.averageChange || 0) > 0.5) score += 1;
+  if ((market.averageChange || 0) < -0.5) score -= 1;
+  if ((impact.todayContributionPct || 0) > 0.25) score += 1;
+  if ((impact.todayContributionPct || 0) < -0.25) score -= 1;
+
+  let direction = "震荡";
+  if (score >= 2) direction = "偏涨";
+  else if (score === 1) direction = "震荡偏涨";
+  else if (score === -1) direction = "震荡偏弱";
+  else if (score <= -2) direction = "偏跌";
+
+  let confidence = "中";
+  if (forecastData.volatilityPct > 1.5 || Math.abs(tomorrow.expectedPct) < forecastData.volatilityPct * 0.35) {
+    confidence = "低";
+  }
+  if (Math.abs(score) >= 3 && forecastData.volatilityPct <= 1.2) confidence = "较高";
+  return { direction, confidence, score };
+}
+
 function tomorrowDeepDive(forecastData, impact, market, holdings) {
   const tomorrow = forecastData.tomorrow || {
     expectedPct: forecastData.expectedPct / Math.max(forecastData.horizonDays, 1),
     rangePct: [forecastData.rangePct[0] / Math.max(forecastData.horizonDays, 1), forecastData.rangePct[1] / Math.max(forecastData.horizonDays, 1)],
     probabilityUp: forecastData.probabilityUp,
   };
-  const direction = tomorrow.expectedPct >= 0 ? "偏涨" : "偏跌";
+  const signal = classifyTomorrow(forecastData, impact, market);
+  const direction = signal.direction;
   const topHolding = holdings.find((item) => typeof item.changePct === "number");
   const industry = impact.topIndustries?.[0]?.name || "重仓行业";
   const bullish = [];
@@ -469,13 +499,15 @@ function tomorrowDeepDive(forecastData, impact, market, holdings) {
     else bearish.push(line);
   }
 
-  const conclusion =
-    direction === "偏涨"
-      ? "明天更像小幅偏涨或震荡上行，不适合追高重仓，适合小额分批观察。"
-      : "明天更像偏弱或震荡回撤，先等重仓股止跌和市场情绪改善。";
+  let conclusion = "明天不确定性较高，更适合等盘中重仓股和指数方向确认。";
+  if (direction === "偏涨") conclusion = "明天更像小幅偏涨或震荡上行，不适合追高重仓，适合小额分批观察。";
+  if (direction === "震荡偏涨") conclusion = "明天有反弹倾向，但信号不强，适合观察或很小额分批。";
+  if (direction === "震荡偏弱") conclusion = "明天偏弱震荡，先别急着加仓，等重仓股止跌更稳。";
+  if (direction === "偏跌") conclusion = "明天更像偏弱或震荡回撤，先等重仓股止跌和市场情绪改善。";
 
   return {
     direction,
+    confidence: signal.confidence,
     probabilityUp: tomorrow.probabilityUp,
     expectedPct: tomorrow.expectedPct,
     rangePct: tomorrow.rangePct,
@@ -637,9 +669,10 @@ function render(data) {
   const marketData = data.market || marketFromTrend(forecastData);
   const tomorrowDetail = data.tomorrowDetail || tomorrowDeepDive(forecastData, data.impact, marketData, data.holdings || []);
   const review = data.review || todayAndAfterAnalysis(forecastData, data.impact, marketData, data.holdings || []);
-  const isUp = forecastData.direction === "up";
-  const directionText = isUp ? "偏涨" : "偏跌";
-  const actionColor = isUp ? "up" : "down";
+  const directionText = tomorrowDetail.direction;
+  const isDown = directionText.includes("跌") || directionText.includes("弱");
+  const isFlat = directionText.includes("震荡");
+  const actionColor = isFlat ? "flat" : isDown ? "down" : "up";
 
   sourceBadge.textContent = data.source;
   summary.innerHTML = `
@@ -649,8 +682,8 @@ function render(data) {
         <h2 class="fund-name">${data.name}</h2>
         <div class="direction ${actionColor}">${directionText}</div>
         <p class="confidence">
-          未来约 ${forecastData.horizonDays} 个交易日上涨概率 ${forecastData.probabilityUp}%。
-          预估变化 ${pct(forecastData.expectedPct)}，常见波动区间 ${pct(forecastData.rangePct[0])} 至 ${pct(forecastData.rangePct[1])}。
+          模型置信度：${tomorrowDetail.confidence || "中"}。未来约 ${forecastData.horizonDays} 个交易日倾向变化 ${pct(forecastData.expectedPct)}，
+          风险区间 ${pct(forecastData.rangePct[0])} 至 ${pct(forecastData.rangePct[1])}。
         </p>
       </div>
       <aside class="forecast-box">
@@ -677,10 +710,10 @@ function render(data) {
   ].join("");
 
   analysisPanel.hidden = false;
-  tomorrowBadge.textContent = `${tomorrowDetail.direction} · 上涨概率 ${tomorrowDetail.probabilityUp}%`;
+  tomorrowBadge.textContent = `${tomorrowDetail.direction} · 置信度 ${tomorrowDetail.confidence || "中"}`;
   tomorrowCard.innerHTML = `
-    <strong>明天判断：${tomorrowDetail.direction}，预估 ${pct(tomorrowDetail.expectedPct)}</strong>
-    <p>这是今天以后最近一个交易日的判断。常见波动区间 ${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}。${tomorrowDetail.conclusion}</p>
+    <strong>明天情景：${tomorrowDetail.direction}，中心估计 ${pct(tomorrowDetail.expectedPct)}</strong>
+    <p>这是今天以后最近一个交易日的情景判断，不是确定预测。常见波动区间 ${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}。${tomorrowDetail.conclusion}</p>
     <div class="factor-row">
       <div class="factor"><span>看涨因素</span><b>${tomorrowDetail.bullish.slice(0, 3).join(" ") || "暂无明显看涨因素。"}</b></div>
       <div class="factor"><span>看跌风险</span><b>${tomorrowDetail.bearish.slice(0, 3).join(" ") || "暂无明显看跌因素。"}</b></div>
@@ -817,6 +850,12 @@ form.addEventListener("submit", async (event) => {
     setError(error.message || "分析失败，请稍后重试。");
   }
 });
+
+const initialCode = new URLSearchParams(location.search).get("fundCode");
+if (/^\d{6}$/.test(initialCode || "")) {
+  input.value = initialCode;
+  window.setTimeout(() => form.requestSubmit(), 150);
+}
 
 window.addEventListener("resize", () => {
   if (!chartPanel.hidden && window.lastHistory) drawChart(window.lastHistory);
