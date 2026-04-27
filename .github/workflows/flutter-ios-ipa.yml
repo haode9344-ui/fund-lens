@@ -62,7 +62,7 @@ jobs:
           if [ "$status" -ne 0 ]; then
             echo "---- Last build lines ----"
             tail -n 120 build-ios.log
-            summary=$(grep -E "Error:|error:|Failed|FAILURE|Could not|Command PhaseScriptExecution|No profiles|Building.*failed" build-ios.log | tail -n 8 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+            summary=$(tail -n 80 build-ios.log | tr '\n' ' ' | cut -c1-3500 | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
             if [ -z "$summary" ]; then
               summary="flutter build ios failed; see the last build lines above."
             fi
