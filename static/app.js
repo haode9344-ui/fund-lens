@@ -635,6 +635,7 @@ function renderMonitor(data) {
         <article class="alert-item">
           <div class="alert-meta">
             <span class="tag">${item.source}</span>
+            <span class="tag">${item.relevance || "中相关"}</span>
             <span class="tag ${sentimentClass}">${item.sentiment}</span>
             <span class="tag">强度 ${item.severity}</span>
           </div>
@@ -858,12 +859,47 @@ function signalClass(text) {
   return "up";
 }
 
-function buildTodaySignal(forecastData, impact, marketData, holdings) {
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function hasRealtimeHoldingData(data) {
+  return (data.holdings || []).some((item) => typeof item.changePct === "number");
+}
+
+function hasIndustryData(data) {
+  return (data.impact?.topIndustries || []).some((item) => {
+    const name = item.name || "";
+    return name && name !== "未知" && name !== "undefined";
+  });
+}
+
+function holdingImpactText(data) {
+  if (!hasRealtimeHoldingData(data)) return "暂无实时数据";
+  return pct(data.impact?.todayContributionPct || 0);
+}
+
+function missingDataReasons(data) {
+  const missing = [];
+  if (!hasRealtimeHoldingData(data)) missing.push("重仓股实时贡献");
+  if (!hasIndustryData(data)) missing.push("行业/主题资金流");
+  if (!data.market?.indices?.length) missing.push("主要指数实时行情");
+  return missing;
+}
+
+function softenDirection(direction, realtimeReady) {
+  if (realtimeReady) return direction;
+  if (direction === "可能上涨" || direction === "偏涨" || direction === "震荡偏涨") return "偏震荡，略偏强";
+  if (direction === "可能下跌" || direction === "偏跌" || direction === "震荡偏弱") return "偏震荡，略偏弱";
+  return "震荡";
+}
+
+function buildTodaySignal(forecastData, impact, marketData, holdings, realtimeReady) {
   let score = 0;
   if ((marketData.averageChange || 0) > 0.45) score += 1;
   if ((marketData.averageChange || 0) < -0.45) score -= 1;
-  if ((impact.todayContributionPct || 0) > 0.2) score += 1;
-  if ((impact.todayContributionPct || 0) < -0.2) score -= 1;
+  if (realtimeReady && (impact.todayContributionPct || 0) > 0.2) score += 1;
+  if (realtimeReady && (impact.todayContributionPct || 0) < -0.2) score -= 1;
   if ((forecastData.lastReturnsPct?.["5d"] || 0) > 1) score += 1;
   if ((forecastData.lastReturnsPct?.["5d"] || 0) < -1) score -= 1;
 
@@ -872,18 +908,25 @@ function buildTodaySignal(forecastData, impact, marketData, holdings) {
   else if (score === 1) direction = "震荡偏强";
   else if (score === -1) direction = "震荡偏弱";
   else if (score <= -2) direction = "可能下跌";
+  direction = softenDirection(direction, realtimeReady);
 
   const activeHolding = holdings.find((item) => typeof item.changePct === "number");
   const holdingReason = activeHolding
     ? `${activeHolding.name} 今日 ${pct(activeHolding.changePct || 0)}，前十大持仓估算贡献 ${pct(impact.todayContributionPct || 0)}。`
-    : `重仓股实时行情暂缺，先用基金短期动量和市场基准判断。`;
+    : `重仓股实时行情暂缺，不能把 0.00% 当成没有影响，只能先用短期动量和市场基准。`;
   const reason = `市场基准：${marketData.label}${marketData.averageChange ? `（${pct(marketData.averageChange)}）` : ""}。${holdingReason}短期动量：近5日 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}。`;
   return { direction, reason, score };
 }
 
-function buildTomorrowSignal(tomorrowDetail, forecastData, impact, marketData) {
-  const reason = `中心估计 ${pct(tomorrowDetail.expectedPct)}，常见波动 ${pct(tomorrowDetail.rangePct[0])} 到 ${pct(tomorrowDetail.rangePct[1])}。判断依据是近5日动量 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}、市场基准 ${marketData.label}、重仓贡献 ${pct(impact.todayContributionPct || 0)}。${tomorrowDetail.conclusion}`;
-  return { direction: tomorrowDetail.direction, reason };
+function buildTomorrowSignal(tomorrowDetail, forecastData, impact, marketData, realtimeReady) {
+  const direction = softenDirection(tomorrowDetail.direction, realtimeReady);
+  const holdingText = realtimeReady ? `重仓贡献 ${pct(impact.todayContributionPct || 0)}` : "重仓贡献暂无实时数据";
+  const confidence = realtimeReady ? tomorrowDetail.confidence : "低";
+  const conclusion = realtimeReady
+    ? tomorrowDetail.conclusion
+    : "关键数据缺失，明天只适合看作低置信度情景，等对应行业指数和重仓股盘中方向确认。";
+  const reason = `上涨概率 ${Math.round(tomorrowDetail.probabilityUp || 50)}%，置信度 ${confidence}。中心估计 ${pct(tomorrowDetail.expectedPct)}，常见波动 ${pct(tomorrowDetail.rangePct[0])} 到 ${pct(tomorrowDetail.rangePct[1])}。依据：近5日动量 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}、市场基准 ${marketData.label}、${holdingText}。${conclusion}`;
+  return { direction, reason, confidence };
 }
 
 function classifyFundProfile(data) {
@@ -922,7 +965,7 @@ function classifyFundProfile(data) {
   return { type, tracking, industry, risk, method };
 }
 
-function buyScore(data, todaySignal, tomorrowDetail) {
+function buyScore(data, todaySignal, tomorrowDetail, realtimeReady) {
   const f = data.forecast;
   let score = 50;
   const reasons = [];
@@ -954,7 +997,10 @@ function buyScore(data, todaySignal, tomorrowDetail) {
     score += 5;
     reasons.push("波动可控");
   }
-  if ((data.impact?.todayContributionPct || 0) > 0.25) {
+  if (!realtimeReady) {
+    score -= 8;
+    reasons.push("缺少重仓股实时贡献确认");
+  } else if ((data.impact?.todayContributionPct || 0) > 0.25) {
     score += 8;
     reasons.push("重仓股今天有贡献");
   } else if ((data.impact?.todayContributionPct || 0) < -0.25) {
@@ -963,7 +1009,7 @@ function buyScore(data, todaySignal, tomorrowDetail) {
   }
   if (todaySignal.direction.includes("涨") || todaySignal.direction.includes("强")) score += 6;
   if (todaySignal.direction.includes("跌") || todaySignal.direction.includes("弱")) score -= 6;
-  if (tomorrowDetail.confidence === "低") {
+  if (tomorrowDetail.confidence === "低" || !realtimeReady) {
     score -= 6;
     reasons.push("明日判断置信度低");
   }
@@ -975,6 +1021,74 @@ function buyScore(data, todaySignal, tomorrowDetail) {
   else if (score >= 20) action = "等待回调";
   else action = "风险偏高，不追";
   return { score, action, reasons: reasons.slice(0, 5) };
+}
+
+function positionAdvice(data, todaySignal, tomorrowSignal, tomorrowDetail, score, profile) {
+  const f = data.forecast;
+  const fiveDay = f.lastReturnsPct?.["5d"] || 0;
+  const realtimeReady = hasRealtimeHoldingData(data);
+  const missing = missingDataReasons(data);
+  const confidence = !realtimeReady || tomorrowDetail.confidence === "低" ? "低" : tomorrowDetail.confidence || "中";
+
+  let buyAdvice = score.action;
+  let buyRange = "0%";
+  if (score.score >= 80) {
+    buyRange = "10%-30%";
+  } else if (score.score >= 60) {
+    buyAdvice = "小额定投";
+    buyRange = "0%-10%";
+  } else if (score.score >= 40) {
+    buyAdvice = "观望为主";
+    buyRange = "0%-10%";
+  } else {
+    buyAdvice = "不追";
+    buyRange = "0%";
+  }
+  if (confidence === "低" && score.score < 65) {
+    buyAdvice = "观望为主";
+    buyRange = "0%-10%";
+  }
+
+  let sellPct = 0;
+  if (tomorrowSignal.direction.includes("弱") || tomorrowSignal.direction.includes("跌")) sellPct += 10;
+  if ((tomorrowDetail.expectedPct || 0) > 2.5) sellPct += 10;
+  if (fiveDay > 5) sellPct += 10;
+  if ((f.maxDrawdownPct || 0) > -5) sellPct += 10;
+  if (score.score < 40) sellPct += 20;
+  if (tomorrowSignal.direction.includes("强") || tomorrowSignal.direction.includes("涨")) sellPct -= 10;
+  if ((f.maxDrawdownPct || 0) < -10) sellPct -= 10;
+  sellPct = clampNumber(Math.round(sellPct), 0, 60);
+
+  let sellAdvice = "不卖";
+  let sellRange = "0%-10%";
+  if (sellPct > 35) {
+    sellAdvice = "分批降低仓位";
+    sellRange = `${Math.max(20, sellPct - 10)}%-${sellPct}%`;
+  } else if (sellPct > 15) {
+    sellAdvice = "可小幅减仓";
+    sellRange = `${Math.max(10, sellPct - 10)}%-${sellPct}%`;
+  } else if (sellPct > 0 || confidence === "低") {
+    sellAdvice = "不卖或小幅减仓";
+    sellRange = "0%-15%";
+  }
+
+  const holdingAdvice = profile.risk === "高" ? "保持轻仓/中低仓位" : profile.risk === "中" ? "保持中低仓位" : "按计划定投仓位";
+  const reasons = [];
+  if (fiveDay > 0) reasons.push(`近5日 ${pct(fiveDay)}，短期动量偏正`);
+  else reasons.push(`近5日 ${pct(fiveDay)}，短期动量偏弱`);
+  reasons.push(`30日波动 ${f.volatilityPct}%，90日回撤 ${f.maxDrawdownPct}%`);
+  if (missing.length) reasons.push(`缺少${missing.join("、")}，所以置信度降为低`);
+  if (profile.risk === "高") reasons.push("行业主题基金波动大，不适合追涨重仓");
+
+  return {
+    buyAdvice,
+    buyRange,
+    sellAdvice,
+    sellRange,
+    holdingAdvice,
+    confidence,
+    reasons,
+  };
 }
 
 function compactMetric(label, value) {
@@ -1002,13 +1116,16 @@ function render(data) {
   }
 
   const marketData = data.market || marketFromTrend(forecastData);
+  const realtimeReady = hasRealtimeHoldingData(data);
+  const missing = missingDataReasons(data);
   const tomorrowDetail = data.tomorrowDetail || tomorrowDeepDive(forecastData, data.impact, marketData, data.holdings || []);
   const todayDate = new Date();
   const tomorrowDate = addTradingDays(todayDate, 1);
-  const todaySignal = buildTodaySignal(forecastData, data.impact, marketData, data.holdings || []);
-  const tomorrowSignal = buildTomorrowSignal(tomorrowDetail, forecastData, data.impact, marketData);
+  const todaySignal = buildTodaySignal(forecastData, data.impact, marketData, data.holdings || [], realtimeReady);
+  const tomorrowSignal = buildTomorrowSignal(tomorrowDetail, forecastData, data.impact, marketData, realtimeReady);
   const profile = classifyFundProfile(data);
-  const score = buyScore(data, todaySignal, tomorrowDetail);
+  const score = buyScore(data, todaySignal, tomorrowDetail, realtimeReady);
+  const advice = positionAdvice(data, todaySignal, tomorrowSignal, tomorrowDetail, score, profile);
 
   sourceBadge.textContent = data.source;
   summary.innerHTML = `
@@ -1037,30 +1154,36 @@ function render(data) {
   `;
 
   metrics.hidden = false;
-  const ma = forecastData.movingAverage || {};
   metrics.innerHTML = [
+    compactMetric("买入建议", advice.buyAdvice),
+    compactMetric("可买比例", advice.buyRange),
+    compactMetric("卖出建议", advice.sellAdvice),
+    compactMetric("可卖比例", advice.sellRange),
+    compactMetric("持仓建议", advice.holdingAdvice),
+    compactMetric("置信度", advice.confidence),
     compactMetric("买入评分", `${score.score}/100`),
-    compactMetric("建议动作", score.action),
-    compactMetric("今日市场", `${marketData.label}${marketData.averageChange ? ` ${pct(marketData.averageChange)}` : ""}`),
-    compactMetric("重仓影响", pct(data.impact.todayContributionPct || 0)),
-    compactMetric("短期动量", `5日 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}`),
-    compactMetric("明日区间", `${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}`),
-    compactMetric("30日波动", `${forecastData.volatilityPct}%`),
-    compactMetric("90日回撤", `${forecastData.maxDrawdownPct}%`),
+    compactMetric("重仓影响", holdingImpactText(data)),
   ].join("");
 
   analysisPanel.hidden = false;
-  tomorrowBadge.textContent = `今天 ${todaySignal.direction} · 明天 ${tomorrowSignal.direction}`;
+  tomorrowBadge.textContent = `仓位建议 · 置信度 ${advice.confidence}`;
   tomorrowCard.innerHTML = `
     <strong>今天 ${formatDisplayDate(todayDate)}：${todaySignal.direction}</strong>
     <p>${todaySignal.reason}</p>
     <strong>明天 ${formatDisplayDate(tomorrowDate)}：${tomorrowSignal.direction}</strong>
     <p>${tomorrowSignal.reason}</p>
+    <div class="position-summary">
+      <span>买入：${advice.buyAdvice}，${advice.buyRange}</span>
+      <span>卖出：${advice.sellAdvice}，${advice.sellRange}</span>
+      <span>仓位：${advice.holdingAdvice}</span>
+    </div>
   `;
   detailGrid.innerHTML = [
     { label: "数据依据", value: `最新净值日 ${data.latest.date}，30日波动 ${forecastData.volatilityPct}%，90日最大回撤 ${forecastData.maxDrawdownPct}%。` },
     { label: "基金类型", value: `${profile.type}。${profile.method}` },
-    { label: "上涨条件", value: `市场基准转强、重仓股贡献转正、近5日动量继续保持正值。` },
+    { label: "关键数据", value: missing.length ? `暂缺：${missing.join("、")}。判断会自动降级。` : `重仓股、行业和市场基准均有实时参考。` },
+    { label: "上涨条件", value: `对应指数转强、重仓股贡献转正、近5日动量继续保持正值，且成交量不要过热。` },
+    { label: "下跌风险", value: `行业指数走弱、龙头股公告利空、资金流出或连续上涨后回撤。` },
     { label: "可能错的原因", value: `持仓披露滞后、基金经理调仓、净值晚上更新、15:00申购规则、外部新闻和估值误差。` },
   ]
     .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)
@@ -1068,29 +1191,31 @@ function render(data) {
   reviewList.innerHTML = [
     { title: "为什么今天可能涨/跌", reason: todaySignal.reason },
     { title: "为什么明天可能涨/跌", reason: tomorrowSignal.reason },
-    { title: "买入怎么判断", reason: `当前评分 ${score.score}/100，动作：${score.action}。依据：${score.reasons.join("、")}。不要一次性重仓，优先分批和控制仓位。` },
+    { title: "买入/卖出怎么判断", reason: `当前评分 ${score.score}/100。买入建议：${advice.buyAdvice}，可买 ${advice.buyRange}；卖出建议：${advice.sellAdvice}，可卖 ${advice.sellRange}。原因：${advice.reasons.join("；")}。` },
   ]
     .map((item) => `<article class="review-item"><strong>${item.title}</strong><span>${item.reason}</span></article>`)
     .join("");
 
   holdingsPanel.hidden = false;
-  impactBadge.textContent = `${data.impact.label} · ${pct(data.impact.todayContributionPct || 0)}`;
+  impactBadge.textContent = realtimeReady ? `${data.impact.label} · ${holdingImpactText(data)}` : "重仓影响 · 暂无实时数据";
   const industryText = data.impact.topIndustries.map((item) => `${item.name} ${item.holdingPct}%`).join(" / ");
   buyViewEl.innerHTML = `
-    <strong>${data.buyView.stance}</strong>
-    <span>${data.buyView.reason}</span>
-    <small>风险：${data.buyView.riskLevel} · 前十大持仓占净值 ${data.impact.topHoldingExposurePct}% · ${industryText}</small>
+    <strong>${advice.holdingAdvice}</strong>
+    <span>买入建议：${advice.buyAdvice}，可买比例 ${advice.buyRange}。卖出建议：${advice.sellAdvice}，可卖比例 ${advice.sellRange}。</span>
+    <span>原因：${advice.reasons.join("；")}。</span>
+    <small>模型比例默认按计划仓位计算；若当前盈利超过 8% 或该基金占总投资超过 20%，可更偏向上限。若亏损较深且仓位不高，不建议因一天波动割肉。</small>
   `;
   explainGrid.innerHTML = [
     { label: "市场环境", value: data.explanation?.market || marketData.label },
-    { label: "今天以后原因", value: data.explanation?.move || tomorrowSignal.reason },
+    { label: "今天以后原因", value: tomorrowSignal.reason },
     { label: "影响事件", value: data.explanation?.events || "资金流向、行业政策、重仓股公告" },
   ]
     .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)
     .join("");
   holdingsList.innerHTML = (data.holdings || [])
     .map((item) => {
-      const direction = (item.changePct || 0) >= 0 ? "hot" : "cold";
+      const hasQuote = typeof item.changePct === "number";
+      const direction = !hasQuote ? "neutral" : item.changePct >= 0 ? "hot" : "cold";
       return `
         <article class="holding">
           <div>
@@ -1098,8 +1223,8 @@ function render(data) {
             <span>${item.code} · ${item.industry || "行业暂缺"}</span>
           </div>
           <div class="holding-numbers">
-            <b class="${direction}">${pct(item.changePct ?? 0)}</b>
-            <span>占 ${item.holdingPct}% · 贡献 ${pct(item.estimatedContributionPct ?? 0)}</span>
+            <b class="${direction}">${typeof item.changePct === "number" ? pct(item.changePct) : "暂无"}</b>
+            <span>占 ${item.holdingPct}% · 贡献 ${typeof item.estimatedContributionPct === "number" ? pct(item.estimatedContributionPct) : "暂无"}</span>
           </div>
         </article>
       `;

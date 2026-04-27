@@ -211,6 +211,7 @@ h2 {
 .day-card strong {
   font-size: clamp(32px, 7vw, 56px);
   line-height: 0.98;
+  overflow-wrap: anywhere;
 }
 
 .day-card p {
@@ -305,8 +306,27 @@ h2 {
 }
 
 .metric strong {
-  font-size: 28px;
+  display: block;
+  font-size: clamp(20px, 2.4vw, 28px);
   letter-spacing: 0;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+}
+
+.position-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.position-summary span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+  padding: 10px 12px;
 }
 
 .chart-panel,
@@ -563,6 +583,10 @@ h2 {
   color: var(--green);
 }
 
+.neutral {
+  color: var(--muted);
+}
+
 .panel-heading {
   align-items: end;
   display: flex;
@@ -620,6 +644,7 @@ h2 {
 
   .detail-grid,
   .factor-row,
+  .position-summary,
   .explain-grid {
     grid-template-columns: 1fr;
   }
