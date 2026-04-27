@@ -1,9 +1,9 @@
-const CACHE_NAME = "fund-lens-v20";
+const CACHE_NAME = "fund-lens-v22";
 const APP_ASSETS = [
   "/",
   "index.html",
   "styles.css",
-  "app.js?v=20",
+  "app.js?v=22",
   "manifest.webmanifest",
   "icon.svg",
   "icon-180.png",

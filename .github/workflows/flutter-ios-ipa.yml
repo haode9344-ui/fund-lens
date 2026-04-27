@@ -1,0 +1,68 @@
+name: Build Flutter iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "flutter_app/**"
+      - ".github/workflows/flutter-ios-ipa.yml"
+
+jobs:
+  build-ios-ipa:
+    name: Build unsigned iOS IPA
+    runs-on: macos-latest
+
+    defaults:
+      run:
+        working-directory: flutter_app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Show Flutter version
+        run: flutter --version
+
+      - name: Generate iOS runner
+        run: |
+          flutter create --platforms=ios --org com.haode9344 --project-name fund_lens .
+          git checkout -- pubspec.yaml lib/main.dart
+
+      - name: Configure iOS app metadata
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 基金雷达" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName FundLens" ios/Runner/Info.plist
+          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = com.haode9344.fundlens;/g' ios/Runner.xcodeproj/project.pbxproj
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Analyze Dart code
+        run: flutter analyze
+
+      - name: Build iOS without codesign
+        run: flutter build ios --release --no-codesign
+
+      - name: Pack unsigned IPA
+        run: |
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/FundLens.app
+          cd build/ipa
+          /usr/bin/zip -qry fund-lens-unsigned.ipa Payload
+          ls -lh fund-lens-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fund-lens-ios-unsigned-ipa
+          path: flutter_app/build/ipa/fund-lens-unsigned.ipa
+          if-no-files-found: error

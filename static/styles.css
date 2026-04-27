@@ -388,6 +388,11 @@ h2 {
   padding: 12px 14px;
 }
 
+.alert-item.major {
+  border-color: rgba(211, 56, 41, 0.35);
+  background: rgba(211, 56, 41, 0.06);
+}
+
 .alert-item strong {
   line-height: 1.35;
 }
@@ -418,6 +423,25 @@ h2 {
 
 .tag.negative {
   color: var(--green);
+}
+
+.tag.routine {
+  color: var(--muted);
+}
+
+.folded-alerts {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.folded-alerts summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.folded-alerts .alert-item {
+  margin-top: 10px;
 }
 
 .tomorrow-card {

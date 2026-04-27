@@ -32,6 +32,7 @@ start-fund-lens.bat
 
 ## 苹果设备
 
+- `flutter_app/` 是 Flutter iOS App 工程，GitHub Actions 会在 macOS 云端自动生成未签名 `.ipa`，见 `flutter_app/README.md`。
 - iPhone Safari 打开服务地址后，可以用“分享”->“添加到主屏幕”安装为 PWA。
 - 只用 GitHub Pages 也可以运行基础分析，打开仓库的 Pages 地址即可。
 - `ios/` 目录提供 SwiftUI 自签模板。Windows 不能生成 IPA，拿到 Mac 上用 Xcode 新建 iOS App 后替换源码即可签名安装。

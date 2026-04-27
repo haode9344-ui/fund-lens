@@ -26,47 +26,11 @@ const backendStatus = document.querySelector("#backendStatus");
 const pct = (number) => `${Number(number) > 0 ? "+" : ""}${Number(number).toFixed(2)}%`;
 const jsonpPrefix = "fundLensJsonp";
 const pageParams = new URLSearchParams(location.search);
-const defaultCloudApi = "https://fund-lens.onrender.com";
-let backendBase = "";
-let backendBlockedReason = "";
-
-function normalizeBackendBase(value) {
-  const raw = (value || "").trim().replace(/\/+$/, "");
-  if (!raw || raw === "none" || raw === "static") return "";
-  if (!/^https?:\/\//i.test(raw)) return "";
-  if (location.protocol === "https:" && raw.startsWith("http://")) {
-    backendBlockedReason = "HTTPS 页面不能连接 HTTP 后端，请使用 HTTPS 云后端。";
-    return "";
-  }
-  return raw;
-}
-
-function configuredBackendBase() {
-  const queryApi = pageParams.get("api");
-  if (queryApi === "clear") {
-    localStorage.removeItem("fundLensApiBase");
-    return "";
-  }
-  if (queryApi) {
-    const normalized = normalizeBackendBase(queryApi);
-    if (normalized) localStorage.setItem("fundLensApiBase", normalized);
-    return normalized;
-  }
-  const saved = normalizeBackendBase(localStorage.getItem("fundLensApiBase") || "");
-  if (saved) return saved;
-  return location.hostname.endsWith("github.io") ? normalizeBackendBase(defaultCloudApi) : "";
-}
-
-backendBase = configuredBackendBase();
 
 function setBackendStatus(message, state = "") {
   if (!backendStatus) return;
   backendStatus.textContent = message;
   backendStatus.className = `backend-status ${state}`.trim();
-}
-
-function backendUrl(path) {
-  return backendBase ? `${backendBase}${path}` : path;
 }
 
 async function fetchJson(url, timeout = 18000) {
@@ -80,15 +44,7 @@ async function fetchJson(url, timeout = 18000) {
   }
 }
 
-if (backendBlockedReason) {
-  setBackendStatus(backendBlockedReason, "warn");
-} else if (backendBase) {
-  setBackendStatus(`后端：${backendBase}`);
-} else if (location.hostname.endsWith("github.io")) {
-  setBackendStatus("云后端未配置，当前使用纯前端模式。");
-} else {
-  setBackendStatus("本机后端：当前电脑服务");
-}
+setBackendStatus("纯前端模式：不连接后端，公告由浏览器直接抓取。", "ready");
 
 function setLoading() {
   summary.innerHTML = `<div class="muted-state"><p>正在抓取公开净值、重仓持仓和行情数据...</p></div>`;
@@ -350,6 +306,16 @@ function marketFromCode(code) {
   return /^[569]/.test(code) ? "1" : "0";
 }
 
+function inferThemeFromName(name) {
+  if (/白酒|酒/.test(name)) return "白酒";
+  if (/医药|医疗|生物/.test(name)) return "医药";
+  if (/半导体|芯片/.test(name)) return "半导体";
+  if (/新能源|电池|光伏|电力设备/.test(name)) return "新能源";
+  if (/军工/.test(name)) return "军工";
+  if (/银行|证券|保险|金融/.test(name)) return "金融";
+  return "";
+}
+
 async function loadFundScript(code) {
   delete window.Data_netWorthTrend;
   delete window.fS_name;
@@ -380,7 +346,7 @@ async function loadHoldings(code) {
   );
   const content = window.apidata?.content || "";
   const doc = new DOMParser().parseFromString(content, "text/html");
-  return [...doc.querySelectorAll("tbody tr")]
+  return [...doc.querySelectorAll("tr")]
     .map((row) => {
       const cells = [...row.querySelectorAll("td")];
       if (cells.length < 9) return null;
@@ -463,6 +429,15 @@ function relatedImpact(holdings) {
   if (todayContributionPct > 0.25) label = "关联持仓正在推动净值";
   if (todayContributionPct < -0.25) label = "关联持仓正在拖累净值";
   return { label, topHoldingExposurePct, todayContributionPct, topIndustries };
+}
+
+function applyThemeFallback(holdings, theme) {
+  if (!theme) return holdings;
+  return holdings.map((item) => {
+    const industry = item.industry || "";
+    if (!industry || industry === "未知" || industry === "undefined") return { ...item, industry: theme };
+    return item;
+  });
 }
 
 function eventHints(impact) {
@@ -617,15 +592,144 @@ function makeBuyView(forecastData, impact, market) {
   return { stance, reason, riskLevel };
 }
 
+function classifyAnnouncement(row, holding) {
+  const title = row.title_ch || row.title || "";
+  const matched = [holding?.name, holding?.code].filter(Boolean);
+  const isMajorNegative = /留置|被留置|纪律审查|监察调查|立案|被查|处罚|刑事|失联|违规|风险提示|退市|违约/.test(title);
+  const isManagerRisk = /(董事长|总经理|实控人|控股股东|核心管理层|高管).*(留置|调查|被查|处罚)|(?:留置|调查|被查|处罚).*(董事长|总经理|实控人|控股股东|高管)/.test(title);
+  const isReport = /季度报告|年度报告|半年度报告|经营数据|业绩|财务|利润|营收/.test(title);
+  const isInvestor = /投资者关系活动记录表|调研活动|业绩说明会/.test(title);
+  const isGovernance = /董事|监事|高管|股东|换届|辞职|选举|聘任|变更/.test(title);
+  const isRoutine = /独立董事述职|信息披露制度|关联交易预计|日常关联交易|内部控制|募集资金|董事会决议|监事会决议|股东大会|章程|审计委员会/.test(title);
+  const isPositive = /增长|预增|回购|增持|分红|超预期|创新高|提价|盈利/.test(title);
+
+  let sentiment = "中性";
+  let severity = 48;
+  let category = "普通公告";
+  let sortRank = 6;
+  let action = "相关公告，等待行情验证。";
+
+  if (isMajorNegative || isManagerRisk) {
+    sentiment = "负面";
+    severity = isManagerRisk ? 93 : 86;
+    category = "重大负面";
+    sortRank = 1;
+    action = "核心管理层或公司治理重大风险事件，可能压制短期情绪和估值。";
+  } else if (isPositive) {
+    sentiment = "正面";
+    severity = 82;
+    category = "重大正面";
+    sortRank = 2;
+    action = "可能改善短期情绪，但仍要看股价是否已提前反映。";
+  } else if (isReport) {
+    sentiment = "经营数据";
+    severity = 68;
+    category = "财报/经营数据";
+    sortRank = 3;
+    action = "直接影响龙头业绩预期，是白酒基金的重要验证数据。";
+  } else if (isGovernance) {
+    sentiment = "治理";
+    severity = 55;
+    category = "股东/高管变化";
+    sortRank = 4;
+    action = "影响治理预期，重要性取决于职位和变动原因。";
+  } else if (isInvestor) {
+    sentiment = "中性";
+    severity = 46;
+    category = "调研/投资者关系";
+    sortRank = 5;
+    action = "可作为经营口径和机构关注度参考，通常不是强预警。";
+  } else if (isRoutine) {
+    sentiment = "例行";
+    severity = 28;
+    category = "例行公告";
+    sortRank = 9;
+    action = "例行披露，通常不直接改变基金短期判断。";
+  }
+
+  if (holding?.holdingPct && !isRoutine) {
+    severity = Math.min(98, Math.round(severity + Math.min(8, holding.holdingPct / 3)));
+  }
+  if (isRoutine) severity = Math.min(40, severity);
+
+  return {
+    id: `notice-${row.art_code || title}`,
+    source: "东方财富公告",
+    relevance: "强相关",
+    sentiment,
+    severity,
+    category,
+    sortRank,
+    time: row.display_time || row.notice_date || "",
+    title,
+    summary: title,
+    action,
+    matched,
+    url: row.art_code && holding?.code ? `https://data.eastmoney.com/notices/detail/${holding.code}/${row.art_code}.html` : "https://data.eastmoney.com/notices/",
+  };
+}
+
+async function loadStockAnnouncements(holding, perStock = 8) {
+  const params = new URLSearchParams({
+    sr: "-1",
+    page_size: String(perStock),
+    page_index: "1",
+    ann_type: "A",
+    client_source: "web",
+    stock_list: holding.code,
+  });
+  const response = await fetchJson(`https://np-anotice-stock.eastmoney.com/api/security/ann?${params}`, 15000);
+  if (!response.ok) return [];
+  const payload = await response.json();
+  return (payload?.data?.list || []).map((row) => classifyAnnouncement(row, holding));
+}
+
+async function loadStaticMonitor(fundData) {
+  const jobs = (fundData.holdings || []).slice(0, 5).map((holding) => loadStockAnnouncements(holding));
+  const results = await Promise.allSettled(jobs);
+  const seen = new Set();
+  const alerts = results
+    .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+    .filter((item) => {
+      if (!item.title || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    })
+    .sort((a, b) => {
+      if (a.sortRank !== b.sortRank) return a.sortRank - b.sortRank;
+      if (b.severity !== a.severity) return b.severity - a.severity;
+      return String(b.time).localeCompare(String(a.time));
+    });
+  const majorNegative = alerts.find((item) => item.sentiment === "负面" && item.severity >= 80);
+  const status = majorNegative ? "出现重大负面公告" : alerts.some((item) => item.severity >= 65) ? "有高影响公告" : "暂无强预警";
+  return {
+    code: fundData.code,
+    name: fundData.name,
+    updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+    status,
+    alerts,
+    note: "纯前端公告监控：直接读取东方财富公开公告，并按重大负面、经营数据、调研、例行公告分级。主面板只展示前 3 条高影响事件，其余折叠。",
+  };
+}
+
 async function loadStaticFund(code) {
   const fund = await loadFundScript(code);
   let market = await loadMarket();
   let holdings = [];
   try {
-    holdings = await enrichHoldings(await loadHoldings(code));
+    holdings = await loadHoldings(code);
   } catch {
     holdings = [];
   }
+  if (holdings.length) {
+    try {
+      holdings = await enrichHoldings(holdings);
+    } catch {
+      // Keep the quarterly holdings even when realtime quotes are unavailable.
+    }
+  }
+  const theme = inferThemeFromName(fund.name);
+  holdings = applyThemeFallback(holdings, theme);
   const forecastData = forecast(fund.history.slice(-180));
   if (market.label === "市场数据暂缺") market = marketFromTrend(forecastData);
   const impact = relatedImpact(holdings);
@@ -650,36 +754,13 @@ async function loadStaticFund(code) {
 }
 
 async function loadFund(code) {
-  const forceStatic = pageParams.has("static");
-  const canUseBackend = !forceStatic && (!location.hostname.endsWith("github.io") || backendBase);
-  if (canUseBackend) {
-    try {
-      setBackendStatus(backendBase ? `正在连接后端：${backendBase}，第一次可能要等几十秒。` : "正在连接本机后端...");
-      const response = await fetchJson(backendUrl(`/api/fund/${code}`), 65000);
-      if (response.ok) {
-        const payload = await response.json();
-        if (payload.ok) {
-          setBackendStatus(backendBase ? `后端已连接：${backendBase}` : "本机后端已连接", "ready");
-          return payload.data;
-        }
-      }
-    } catch (error) {
-      const target = backendBase ? "后端" : "本机后端";
-      setBackendStatus(`${target}响应超时或暂时没连上，已先切到纯前端行情模式。`, "warn");
-    }
-  }
-  if (forceStatic) setBackendStatus("纯前端模式，不连接后端。", "warn");
+  setBackendStatus("纯前端模式：正在抓取公开净值、持仓和公告。", "ready");
   return loadStaticFund(code);
 }
 
-async function loadMonitor(code) {
-  const forceStatic = pageParams.has("static");
-  if (forceStatic || (location.hostname.endsWith("github.io") && !backendBase)) return null;
+async function loadMonitor(code, fundData) {
   try {
-    const response = await fetchJson(backendUrl(`/api/monitor/${code}`), 65000);
-    if (!response.ok) return null;
-    const payload = await response.json();
-    return payload.ok ? payload.data : null;
+    return await loadStaticMonitor(fundData);
   } catch {
     return null;
   }
@@ -688,10 +769,8 @@ async function loadMonitor(code) {
 function renderMonitor(data) {
   if (!data) {
     monitorPanel.hidden = false;
-    monitorBadge.textContent = backendBase ? "后端未连接" : "后端未启用";
-    monitorNote.textContent = backendBase
-      ? "已配置后端，但这次没有拿到监控数据。可能是云服务休眠、刚启动较慢，或后端地址未部署成功。"
-      : "GitHub Pages 纯前端不能后台监控。部署 HTTPS 云后端后，可抓取新浪7x24快讯和东方财富公告，并按重仓股/行业做预警。";
+    monitorBadge.textContent = "公告暂缺";
+    monitorNote.textContent = "这次没有抓到公开公告，基金分析仍按净值、持仓和市场数据生成。";
     alertList.innerHTML = "";
     return;
   }
@@ -702,24 +781,35 @@ function renderMonitor(data) {
     alertList.innerHTML = `<article class="alert-item"><strong>暂无匹配预警</strong><span>当前没有抓到与基金、重仓股或行业强相关的快讯/公告。</span></article>`;
     return;
   }
-  alertList.innerHTML = data.alerts
-    .map((item) => {
-      const sentimentClass = item.sentiment === "正面" ? "positive" : item.sentiment === "负面" ? "negative" : "";
-      return `
-        <article class="alert-item">
-          <div class="alert-meta">
-            <span class="tag">${item.source}</span>
-            <span class="tag">${item.relevance || "中相关"}</span>
-            <span class="tag ${sentimentClass}">${item.sentiment}</span>
-            <span class="tag">强度 ${item.severity}</span>
-          </div>
-          <strong>${item.title}</strong>
-          <span>${item.action}</span>
-          <span>关联：${(item.matched || []).join("、") || "市场"}</span>
-        </article>
-      `;
-    })
-    .join("");
+  const topAlerts = data.alerts.slice(0, 3);
+  const otherAlerts = data.alerts.slice(3);
+  const renderAlert = (item) => {
+    const sentimentClass = item.sentiment === "正面" ? "positive" : item.sentiment === "负面" ? "negative" : item.sentiment === "例行" ? "routine" : "";
+    return `
+      <article class="alert-item ${item.severity >= 80 ? "major" : ""}">
+        <div class="alert-meta">
+          <span class="tag">${item.source}</span>
+          <span class="tag">${item.relevance || "强相关"}</span>
+          <span class="tag ${sentimentClass}">${item.sentiment}</span>
+          <span class="tag">${item.category || "公告"}</span>
+          <span class="tag">强度 ${item.severity}</span>
+        </div>
+        <strong>${item.title}</strong>
+        <span>${item.action}</span>
+        <span>关联：${(item.matched || []).join("、") || "重仓股"}</span>
+      </article>
+    `;
+  };
+  alertList.innerHTML =
+    topAlerts.map(renderAlert).join("") +
+    (otherAlerts.length
+      ? `
+        <details class="folded-alerts">
+          <summary>其他 ${otherAlerts.length} 条低影响或例行公告</summary>
+          ${otherAlerts.map(renderAlert).join("")}
+        </details>
+      `
+      : "");
 }
 
 function render(data) {
@@ -949,8 +1039,31 @@ function hasIndustryData(data) {
 }
 
 function holdingImpactText(data) {
-  if (!hasRealtimeHoldingData(data)) return "暂无实时数据";
+  if (!hasRealtimeHoldingData(data)) return "不可计算";
   return pct(data.impact?.todayContributionPct || 0);
+}
+
+function majorNegativeEvent(data) {
+  return (data.monitor?.alerts || []).find((item) => item.sentiment === "负面" && item.severity >= 80);
+}
+
+function liquorSpecial(data) {
+  const name = data.name || "";
+  const industry = data.impact?.topIndustries?.[0]?.name || "";
+  if (!/白酒|酒/.test(`${name}${industry}`)) return null;
+  const f = data.forecast;
+  const event = majorNegativeEvent(data);
+  const valuation =
+    f.maxDrawdownPct < -15 ? "中偏低" : f.lastReturnsPct?.["20d"] > 8 ? "偏高" : "中";
+  const leader = event ? `偏弱：${event.title}` : "待确认：重点看茅台、五粮液、泸州老窖经营数据";
+  const consumption = f.lastReturnsPct?.["20d"] > 3 ? "中性偏强" : f.maxDrawdownPct < -12 ? "中性偏弱" : "中性";
+  const month = new Date().getMonth() + 1;
+  const holiday = [1, 2, 9, 10].includes(month) ? "节假日前后，催化较强" : "非春节/中秋/国庆窗口，催化偏弱";
+  const crowding = f.volatilityPct > 1.5 ? "中高" : "中";
+  return {
+    text: `估值位置：${valuation}；龙头业绩：${leader}；消费情绪：${consumption}；节假日效应：${holiday}；机构拥挤度：${crowding}。`,
+    majorRisk: event ? `${event.matched?.[0] || "重仓股"}重大负面公告` : "",
+  };
 }
 
 function missingDataReasons(data) {
@@ -1087,6 +1200,11 @@ function buyScore(data, todaySignal, tomorrowDetail, realtimeReady) {
     score -= 6;
     reasons.push("明日判断置信度低");
   }
+  const event = majorNegativeEvent(data);
+  if (event) {
+    score -= 8;
+    reasons.push("重仓股出现重大负面公告");
+  }
   score = Math.max(0, Math.min(100, Math.round(score)));
   let action = "观望";
   if (score >= 80) action = "可分批买入";
@@ -1103,6 +1221,8 @@ function positionAdvice(data, todaySignal, tomorrowSignal, tomorrowDetail, score
   const realtimeReady = hasRealtimeHoldingData(data);
   const missing = missingDataReasons(data);
   const confidence = !realtimeReady || tomorrowDetail.confidence === "低" ? "低" : tomorrowDetail.confidence || "中";
+  const liquor = liquorSpecial(data);
+  const event = majorNegativeEvent(data);
 
   let buyAdvice = score.action;
   let buyRange = "0%";
@@ -1122,6 +1242,10 @@ function positionAdvice(data, todaySignal, tomorrowSignal, tomorrowDetail, score
     buyAdvice = "观望为主";
     buyRange = "0%-10%";
   }
+  if (liquor && confidence === "低") {
+    buyAdvice = "观望，不追涨";
+    buyRange = "计划新增仓位的 0%-5%";
+  }
 
   let sellPct = 0;
   if (tomorrowSignal.direction.includes("弱") || tomorrowSignal.direction.includes("跌")) sellPct += 10;
@@ -1134,29 +1258,35 @@ function positionAdvice(data, todaySignal, tomorrowSignal, tomorrowDetail, score
   sellPct = clampNumber(Math.round(sellPct), 0, 60);
 
   let sellAdvice = "不卖";
-  let sellRange = "0%-10%";
+  let sellRange = "当前该基金持仓的 0%-10%";
   if (sellPct > 35) {
     sellAdvice = "分批降低仓位";
-    sellRange = `${Math.max(20, sellPct - 10)}%-${sellPct}%`;
+    sellRange = `当前该基金持仓的 ${Math.max(20, sellPct - 10)}%-${sellPct}%`;
   } else if (sellPct > 15) {
     sellAdvice = "可小幅减仓";
-    sellRange = `${Math.max(10, sellPct - 10)}%-${sellPct}%`;
+    sellRange = `当前该基金持仓的 ${Math.max(10, sellPct - 10)}%-${sellPct}%`;
   } else if (sellPct > 0 || confidence === "低") {
     sellAdvice = "不卖或小幅减仓";
-    sellRange = "0%-15%";
+    sellRange = "当前该基金持仓的 0%-15%";
+  }
+  if (liquor && confidence === "低") {
+    sellAdvice = "不急卖，仓位偏重者小幅降仓";
+    sellRange = event ? "当前持仓的 0%-10%，若五粮液明显拖累可提高到15%" : "当前该基金持仓的 0%-10%";
   }
 
-  const holdingAdvice = profile.risk === "高" ? "保持轻仓/中低仓位" : profile.risk === "中" ? "保持中低仓位" : "按计划定投仓位";
+  const holdingAdvice = liquor ? "保持中低仓位" : profile.risk === "高" ? "保持轻仓/中低仓位" : profile.risk === "中" ? "保持中低仓位" : "按计划定投仓位";
   const reasons = [];
   if (fiveDay > 0) reasons.push(`近5日 ${pct(fiveDay)}，短期动量偏正`);
   else reasons.push(`近5日 ${pct(fiveDay)}，短期动量偏弱`);
   reasons.push(`30日波动 ${f.volatilityPct}%，90日回撤 ${f.maxDrawdownPct}%`);
   if (missing.length) reasons.push(`缺少${missing.join("、")}，所以置信度降为低`);
   if (profile.risk === "高") reasons.push("行业主题基金波动大，不适合追涨重仓");
+  if (event) reasons.push(`${event.matched?.[0] || "重仓股"}存在重大负面公告`);
+  if (liquor) reasons.push("白酒板块仍处修复波动期");
 
   return {
     buyAdvice,
-    buyRange,
+    buyRange: buyRange.includes("仓位") ? buyRange : `计划新增仓位的 ${buyRange}`,
     sellAdvice,
     sellRange,
     holdingAdvice,
@@ -1200,6 +1330,7 @@ function render(data) {
   const profile = classifyFundProfile(data);
   const score = buyScore(data, todaySignal, tomorrowDetail, realtimeReady);
   const advice = positionAdvice(data, todaySignal, tomorrowSignal, tomorrowDetail, score, profile);
+  const liquor = liquorSpecial(data);
 
   sourceBadge.textContent = data.source;
   summary.innerHTML = `
@@ -1236,7 +1367,8 @@ function render(data) {
     compactMetric("持仓建议", advice.holdingAdvice),
     compactMetric("置信度", advice.confidence),
     compactMetric("买入评分", `${score.score}/100`),
-    compactMetric("重仓影响", holdingImpactText(data)),
+    compactMetric("重仓行情", realtimeReady ? "已接入" : "未接入"),
+    compactMetric("重仓贡献", holdingImpactText(data)),
   ].join("");
 
   analysisPanel.hidden = false;
@@ -1256,6 +1388,7 @@ function render(data) {
     { label: "数据依据", value: `最新净值日 ${data.latest.date}，30日波动 ${forecastData.volatilityPct}%，90日最大回撤 ${forecastData.maxDrawdownPct}%。` },
     { label: "基金类型", value: `${profile.type}。${profile.method}` },
     { label: "关键数据", value: missing.length ? `暂缺：${missing.join("、")}。判断会自动降级。` : `重仓股、行业和市场基准均有实时参考。` },
+    ...(liquor ? [{ label: "白酒专项", value: liquor.text }] : []),
     { label: "上涨条件", value: `对应指数转强、重仓股贡献转正、近5日动量继续保持正值，且成交量不要过热。` },
     { label: "下跌风险", value: `行业指数走弱、龙头股公告利空、资金流出或连续上涨后回撤。` },
     { label: "可能错的原因", value: `持仓披露滞后、基金经理调仓、净值晚上更新、15:00申购规则、外部新闻和估值误差。` },
@@ -1271,17 +1404,18 @@ function render(data) {
     .join("");
 
   holdingsPanel.hidden = false;
-  impactBadge.textContent = realtimeReady ? `${data.impact.label} · ${holdingImpactText(data)}` : "重仓影响 · 暂无实时数据";
+  impactBadge.textContent = realtimeReady ? `${data.impact.label} · 重仓贡献 ${holdingImpactText(data)}` : "重仓行情未接入 · 重仓贡献不可计算";
   const industryText = data.impact.topIndustries.map((item) => `${item.name} ${item.holdingPct}%`).join(" / ");
   buyViewEl.innerHTML = `
     <strong>${advice.holdingAdvice}</strong>
-    <span>买入建议：${advice.buyAdvice}，可买比例 ${advice.buyRange}。卖出建议：${advice.sellAdvice}，可卖比例 ${advice.sellRange}。</span>
+    <span>买入建议：${advice.buyAdvice}，可买比例：${advice.buyRange}。卖出建议：${advice.sellAdvice}，可卖比例：${advice.sellRange}。</span>
     <span>原因：${advice.reasons.join("；")}。</span>
-    <small>模型比例默认按计划仓位计算；若当前盈利超过 8% 或该基金占总投资超过 20%，可更偏向上限。若亏损较深且仓位不高，不建议因一天波动割肉。</small>
+    <small>可买比例指计划新增仓位，可卖比例指当前该基金持仓。若当前盈利超过 8% 或该基金占总投资超过 20%，可更偏向卖出上限；若亏损较深且仓位不高，不建议因一天波动割肉。</small>
   `;
   explainGrid.innerHTML = [
     { label: "市场环境", value: data.explanation?.market || marketData.label },
     { label: "今天以后原因", value: tomorrowSignal.reason },
+    ...(liquor ? [{ label: "白酒专项", value: liquor.text }] : []),
     { label: "影响事件", value: data.explanation?.events || "资金流向、行业政策、重仓股公告" },
   ]
     .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)
@@ -1322,8 +1456,12 @@ form.addEventListener("submit", async (event) => {
 
   setLoading();
   try {
-    render(await loadFund(code));
-    renderMonitor(await loadMonitor(code));
+    const fundData = await loadFund(code);
+    render(fundData);
+    const monitorData = await loadMonitor(code, fundData);
+    fundData.monitor = monitorData;
+    if (monitorData) render(fundData);
+    renderMonitor(monitorData);
   } catch (error) {
     setError(error.message || "分析失败，请稍后重试。");
   }
