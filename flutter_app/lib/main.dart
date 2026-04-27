@@ -347,7 +347,8 @@ class FundPositionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final todayIncome = analysis == null ? 0.0 : item.amount * analysis!.todayPct / 100;
+    final data = analysis;
+    final todayIncome = data == null ? 0.0 : item.amount * data.todayPct / 100;
     final positive = todayIncome >= 0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -365,12 +366,12 @@ class FundPositionCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(analysis?.name ?? '基金 ${item.code}', style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+                        Text(data?.name ?? '基金 ${item.code}', style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
                         const SizedBox(height: 6),
                         Text(
-                          analysis == null
+                          data == null
                               ? '${item.code} · 分析中'
-                              : '${item.code} · 今天 ${analysis.analysisDate} · ${analysis.realtimeStatus}',
+                              : '${item.code} · 今天 ${data.analysisDate} · ${data.realtimeStatus}',
                           style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700),
                         ),
                       ],
@@ -386,7 +387,7 @@ class FundPositionCard extends StatelessWidget {
                   Expanded(
                     child: _Metric(
                       label: '实时估算',
-                      value: analysis == null ? '分析中' : '${pct(analysis!.todayPct)} / ${signedMoney(todayIncome)}',
+                      value: data == null ? '分析中' : '${pct(data.todayPct)} / ${signedMoney(todayIncome)}',
                       color: positive ? AppColors.red : AppColors.green,
                     ),
                   ),
@@ -402,7 +403,7 @@ class FundPositionCard extends StatelessWidget {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        analysis?.summaryLine ?? '正在读取净值、持仓和公告...',
+                        data?.summaryLine ?? '正在读取净值、持仓和公告...',
                         style: const TextStyle(fontWeight: FontWeight.w800, height: 1.35),
                       ),
                     ),
