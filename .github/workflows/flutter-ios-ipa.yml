@@ -40,6 +40,8 @@ jobs:
         run: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 小又" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleName Xiaoyou" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" ios/Runner/Info.plist || true
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" ios/Runner/Info.plist || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" ios/Runner/Info.plist
           sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = com.haode9344.fundlens;/g' ios/Runner.xcodeproj/project.pbxproj
 
       - name: Generate Xiaoyou app icon
