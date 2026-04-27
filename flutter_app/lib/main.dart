@@ -350,7 +350,12 @@ class FundPositionCard extends StatelessWidget {
                       children: [
                         Text(analysis?.name ?? '基金 ${item.code}', style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
                         const SizedBox(height: 6),
-                        Text('${item.code} · ${analysis?.theme ?? '分析中'}', style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700)),
+                        Text(
+                          analysis == null
+                              ? '${item.code} · 分析中'
+                              : '${item.code} · 今天 ${analysis.analysisDate} · 净值日 ${analysis.latestDate}',
+                          style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700),
+                        ),
                       ],
                     ),
                   ),
@@ -439,7 +444,10 @@ class _FundDetailPageState extends State<FundDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('${_analysis.code} · ${_analysis.latestDate}', style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700)),
+                  Text(
+                    '${_analysis.code} · 今天 ${_analysis.analysisDate} · 最新净值日 ${_analysis.latestDate}',
+                    style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700),
+                  ),
                   const SizedBox(height: 8),
                   Text(_analysis.name, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900, height: 1.08)),
                   const SizedBox(height: 16),
@@ -889,6 +897,7 @@ class FundService {
     }
 
     final todayReason = [
+      '今天是 ${todayDateString()}，最新正式净值公布到 ${last.date}。',
       '市场状态：${market.label}，主要指数均值 ${pct(market.averageChange)}。',
       hasRealtime ? '重仓股估算贡献 ${pct(contribution)}。' : '重仓实时行情未接入，用最新净值涨跌和短期动量估算。',
       '近5日 ${pct(last5)}，90日回撤 ${pct(drawdown)}。',
@@ -906,6 +915,7 @@ class FundService {
       code: fund.code,
       name: fund.name,
       theme: theme.isEmpty ? '主题待确认' : theme,
+      analysisDate: todayDateString(),
       latestDate: last.date,
       latestValue: last.value,
       todayPct: todayPct,
@@ -1026,6 +1036,7 @@ class FundAnalysis {
     required this.code,
     required this.name,
     required this.theme,
+    required this.analysisDate,
     required this.latestDate,
     required this.latestValue,
     required this.todayPct,
@@ -1047,6 +1058,7 @@ class FundAnalysis {
   final String code;
   final String name;
   final String theme;
+  final String analysisDate;
   final String latestDate;
   final double latestValue;
   final double todayPct;
@@ -1170,6 +1182,11 @@ double? toNullableDouble(dynamic value) {
 
 String dateFromMillis(int millis) {
   final date = DateTime.fromMillisecondsSinceEpoch(millis);
+  return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+}
+
+String todayDateString() {
+  final date = DateTime.now();
   return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
 }
 
