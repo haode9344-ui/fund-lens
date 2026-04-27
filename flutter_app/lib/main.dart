@@ -150,7 +150,7 @@ class _PortfolioHomeState extends State<PortfolioHome> {
     double income = 0;
     for (final item in _currentItems) {
       final analysis = _cache[item.code];
-      final value = positionValue(item, analysis);
+      final value = positionValue(item);
       amount += value;
       if (analysis != null) income += value * analysis.todayPct / 100;
     }
@@ -357,7 +357,7 @@ class FundPositionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final data = analysis;
-    final currentValue = positionValue(item, data);
+    final currentValue = positionValue(item);
     final todayIncome = data == null ? 0.0 : currentValue * data.todayPct / 100;
     final positive = todayIncome >= 0;
     return Padding(
@@ -393,7 +393,7 @@ class FundPositionCard extends StatelessWidget {
               const SizedBox(height: 16),
               Row(
                 children: [
-                  Expanded(child: _Metric(label: item.shares > 0 ? '估算市值' : '持有金额', value: money(currentValue))),
+                  Expanded(child: _Metric(label: '持有金额', value: money(currentValue))),
                   Expanded(
                     child: _Metric(
                       label: '实时估算',
@@ -453,22 +453,9 @@ class _FundDetailPageState extends State<FundDetailPage> {
     if (mounted) setState(() => _analysis = fresh);
   }
 
-  Future<void> _editPosition() async {
-    final result = await showModalBottomSheet<PortfolioItem>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => AddFundSheet(title: '持仓信息', initialItem: _item),
-    );
-    if (result == null) return;
-    setState(() => _item = result);
-    final fresh = await widget.onUpdateItem(result);
-    if (mounted) setState(() => _analysis = fresh);
-  }
-
   @override
   Widget build(BuildContext context) {
-    final currentValue = positionValue(_item, _analysis);
+    final currentValue = positionValue(_item);
     final buyAmount = currentValue * _analysis.buyRatio;
     final sellAmount = currentValue * _analysis.sellRatio;
     final hasOperation = buyAmount > 0.01 || sellAmount > 0.01;
@@ -535,25 +522,18 @@ class _FundDetailPageState extends State<FundDetailPage> {
                       ],
                     )
                   else
-                    const Text('今日无网格触发点，建议观望。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
-                  if (!_item.hasCostBasis) ...[
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: _editPosition,
-                        icon: const Icon(CupertinoIcons.slider_horizontal_3),
-                        label: const Text('点击设置持仓成本与份额'),
-                      ),
-                    ),
-                  ],
+                    const Text('今日没有买卖触发点，建议观望。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 10),
                   Text(_analysis.actionReason, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 12),
+                  ReasonBox(title: '买入原因', text: _analysis.buyReason, color: AppColors.red),
+                  const SizedBox(height: 10),
+                  ReasonBox(title: '卖出原因', text: _analysis.sellReason, color: AppColors.green),
                 ],
               ),
             ),
             const SizedBox(height: 12),
-            DecisionModelCard(decision: _analysis.decision, needsCostBasis: !_item.hasCostBasis, onEditPosition: _editPosition),
+            DecisionModelCard(decision: _analysis.decision),
             const SizedBox(height: 12),
             if (_analysis.liquorSpecial != null) ...[
               CardShell(
@@ -591,10 +571,9 @@ class _FundDetailPageState extends State<FundDetailPage> {
 }
 
 class AddFundSheet extends StatefulWidget {
-  const AddFundSheet({super.key, required this.title, this.initialItem});
+  const AddFundSheet({super.key, required this.title});
 
   final String title;
-  final PortfolioItem? initialItem;
 
   @override
   State<AddFundSheet> createState() => _AddFundSheetState();
@@ -603,39 +582,17 @@ class AddFundSheet extends StatefulWidget {
 class _AddFundSheetState extends State<AddFundSheet> {
   final TextEditingController _codeController = TextEditingController();
   final TextEditingController _amountController = TextEditingController();
-  final TextEditingController _costController = TextEditingController();
-  final TextEditingController _sharesController = TextEditingController();
-  final TextEditingController _gridController = TextEditingController(text: '2');
-
-  @override
-  void initState() {
-    super.initState();
-    final item = widget.initialItem;
-    if (item == null) return;
-    _codeController.text = item.code;
-    _amountController.text = trimNumber(item.amount);
-    if (item.costNav > 0) _costController.text = trimNumber(item.costNav);
-    if (item.shares > 0) _sharesController.text = trimNumber(item.shares);
-    _gridController.text = trimNumber(item.gridStepPct);
-  }
 
   @override
   void dispose() {
     _codeController.dispose();
     _amountController.dispose();
-    _costController.dispose();
-    _sharesController.dispose();
-    _gridController.dispose();
     super.dispose();
   }
 
   void _submit() {
     final code = _codeController.text.trim();
-    var amount = double.tryParse(_amountController.text.trim()) ?? 0;
-    final costNav = double.tryParse(_costController.text.trim()) ?? 0;
-    final shares = double.tryParse(_sharesController.text.trim()) ?? 0;
-    final gridStep = double.tryParse(_gridController.text.trim()) ?? 2.0;
-    if (amount <= 0 && costNav > 0 && shares > 0) amount = costNav * shares;
+    final amount = double.tryParse(_amountController.text.trim()) ?? 0;
     if (!RegExp(r'^\d{6}$').hasMatch(code)) return;
     if (amount <= 0) return;
     Navigator.pop(
@@ -643,9 +600,6 @@ class _AddFundSheetState extends State<AddFundSheet> {
       PortfolioItem(
         code: code,
         amount: amount,
-        costNav: costNav,
-        shares: shares,
-        gridStepPct: gridStep <= 0 ? 2.0 : gridStep,
       ),
     );
   }
@@ -653,7 +607,6 @@ class _AddFundSheetState extends State<AddFundSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    final editing = widget.initialItem != null;
     return Padding(
       padding: EdgeInsets.only(bottom: bottom),
       child: Container(
@@ -667,11 +620,10 @@ class _AddFundSheetState extends State<AddFundSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(editing ? '设置持仓成本与份额' : '添加到${widget.title}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+              Text('添加到${widget.title}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
               const SizedBox(height: 14),
               CupertinoTextField(
                 controller: _codeController,
-                enabled: !editing,
                 keyboardType: TextInputType.number,
                 maxLength: 6,
                 placeholder: '搜索基金代码，例如 161725',
@@ -682,31 +634,7 @@ class _AddFundSheetState extends State<AddFundSheet> {
               CupertinoTextField(
                 controller: _amountController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                placeholder: editing ? '当前该基金持仓金额' : (widget.title == '持有持仓' ? '我持有的金额' : '模拟金额'),
-                padding: const EdgeInsets.all(15),
-                decoration: inputDecoration(),
-              ),
-              const SizedBox(height: 12),
-              CupertinoTextField(
-                controller: _costController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                placeholder: '持仓成本价，可不填',
-                padding: const EdgeInsets.all(15),
-                decoration: inputDecoration(),
-              ),
-              const SizedBox(height: 12),
-              CupertinoTextField(
-                controller: _sharesController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                placeholder: '持有份额，可不填',
-                padding: const EdgeInsets.all(15),
-                decoration: inputDecoration(),
-              ),
-              const SizedBox(height: 12),
-              CupertinoTextField(
-                controller: _gridController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                placeholder: '网格步长%，默认 2',
+                placeholder: widget.title == '持有持仓' ? '我持有的金额' : '模拟金额',
                 padding: const EdgeInsets.all(15),
                 decoration: inputDecoration(),
               ),
@@ -715,8 +643,8 @@ class _AddFundSheetState extends State<AddFundSheet> {
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: _submit,
-                  icon: Icon(editing ? CupertinoIcons.checkmark_alt : CupertinoIcons.add),
-                  label: Text(editing ? '保存并重新分析' : '添加并分析'),
+                  icon: const Icon(CupertinoIcons.add),
+                  label: const Text('添加并分析'),
                 ),
               ),
             ],
@@ -768,6 +696,35 @@ class _Metric extends StatelessWidget {
   }
 }
 
+class ReasonBox extends StatelessWidget {
+  const ReasonBox({super.key, required this.title, required this.text, required this.color});
+
+  final String title;
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: TextStyle(color: color, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 5),
+          Text(text, style: const TextStyle(color: AppColors.ink, height: 1.42, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
 class IntradayChartCard extends StatefulWidget {
   const IntradayChartCard({
     super.key,
@@ -812,7 +769,7 @@ class _IntradayChartCardState extends State<IntradayChartCard> {
           Row(
             children: [
               const Expanded(child: Text('当日分时走势', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
-              Pill(text: widget.points.length > 4 ? '分钟估值' : '等待更新'),
+              Pill(text: widget.points.length >= 120 ? '${widget.points.length}个分钟点' : '等待分钟数据'),
             ],
           ),
           const SizedBox(height: 6),
@@ -919,7 +876,7 @@ class IntradayChartPainter extends CustomPainter {
         Paint()
           ..color = color
           ..strokeWidth = 2.4
-          ..strokeCap = StrokeCap.round,
+          ..strokeCap = StrokeCap.butt,
       );
     }
 
@@ -977,11 +934,9 @@ class IntradayChartPainter extends CustomPainter {
 }
 
 class DecisionModelCard extends StatelessWidget {
-  const DecisionModelCard({super.key, required this.decision, required this.needsCostBasis, required this.onEditPosition});
+  const DecisionModelCard({super.key, required this.decision});
 
   final DecisionModel decision;
-  final bool needsCostBasis;
-  final VoidCallback onEditPosition;
 
   @override
   Widget build(BuildContext context) {
@@ -1000,19 +955,8 @@ class DecisionModelCard extends StatelessWidget {
           const SizedBox(height: 12),
           _DecisionRow(label: '估值位置', value: decision.valuationState, tone: decision.valuationTone),
           _DecisionRow(label: '均线趋势', value: decision.trendState, tone: decision.trendTone),
-          _DecisionRow(label: '偏离度', value: decision.costDeviationText, tone: decision.deviationTone),
-          _DecisionRow(label: '网格动作', value: decision.gridTrigger, tone: decision.deviationTone),
-          if (needsCostBasis) ...[
-            const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: onEditPosition,
-                icon: const Icon(CupertinoIcons.slider_horizontal_3),
-                label: const Text('补全成本与份额'),
-              ),
-            ),
-          ],
+          _DecisionRow(label: '持仓金额', value: decision.costDeviationText, tone: decision.deviationTone),
+          _DecisionRow(label: '金额规则', value: decision.gridTrigger, tone: decision.deviationTone),
           const SizedBox(height: 10),
           Text(decision.reason, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
         ],
@@ -1139,7 +1083,7 @@ class FundService {
     final code = item.code;
     final fund = await _loadFundBase(code);
     final realtime = await _loadRealtimeEstimate(code);
-    final intraday = await _loadIntradayTrend(code, realtime);
+    final intraday = await _loadIntradayTrend(code, realtime, fund.points.last.value);
     final rawHoldings = await _loadHoldings(code);
     final theme = inferTheme(fund.name);
     final holdings = await _enrichHoldings(applyThemeFallback(rawHoldings, theme));
@@ -1194,44 +1138,39 @@ class FundService {
     }
   }
 
-  Future<IntradaySeries> _loadIntradayTrend(String code, RealtimeEstimate? realtime) async {
+  Future<IntradaySeries> _loadIntradayTrend(String code, RealtimeEstimate? realtime, double fallbackNav) async {
     final endpoints = [
-      Uri.https('fundmobapi.eastmoney.com', '/FundMApi/FundVarietieValuationDetail', {
+      Uri.https('fundcomapi.tiantianfunds.com', '/mm/fundTrade/FundValuationDetail', {
         'FCODE': code,
-        'RANGE': 'y',
-        'deviceid': 'xiaoyou',
-        'plat': 'Iphone',
-        'product': 'EFund',
-        'version': '7.0.0',
       }),
     ];
     for (final uri in endpoints) {
       try {
-        final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+        final response = await _client.get(uri, headers: const {'Referer': 'https://fund.eastmoney.com/'}).timeout(const Duration(seconds: 8));
         if (response.statusCode != 200) continue;
         final raw = utf8.decode(response.bodyBytes, allowMalformed: true);
         final jsonText = extractJsonLike(raw);
         if (jsonText == null) continue;
-        final payload = jsonDecode(jsonText);
-        final points = _parseIntradayPayload(payload, realtime);
-        if (points.length >= 3) {
-          return IntradaySeries(points: points, note: '按 A 股交易时间展示，长按可查看每分钟估值。');
+        final payload = decodeNestedFundPayload(jsonDecode(jsonText));
+        final points = _parseIntradayPayload(payload, realtime, fallbackNav);
+        final minimum = minimumMinutePointCount();
+        if (points.length >= minimum) {
+          return IntradaySeries(points: points, note: '已接入当日分钟估值，共 ${points.length} 个点；硬折线连接，不做平滑。');
         }
       } catch (_) {
         continue;
       }
     }
-    final fallback = buildSyntheticIntraday(realtime);
     return IntradaySeries(
-      points: fallback,
-      note: fallback.isEmpty ? '交易时段下拉刷新后显示当天分钟走势。' : '实时估值已更新，分时线会随下拉刷新继续校准。',
+      points: const [],
+      note: '暂未拿到足够的分钟级数据，不用少量点伪装分时线。交易时段下拉刷新再试。',
     );
   }
 
-  List<IntradayPoint> _parseIntradayPayload(dynamic payload, RealtimeEstimate? realtime) {
+  List<IntradayPoint> _parseIntradayPayload(dynamic payload, RealtimeEstimate? realtime, double fallbackNav) {
     final rows = <IntradayPoint>[];
     void visit(dynamic node) {
-      final point = _pointFromIntradayRow(node, realtime);
+      final point = _pointFromIntradayRow(node, realtime, fallbackNav);
       if (point != null) {
         rows.add(point);
         return;
@@ -1246,7 +1185,7 @@ class FundService {
         }
       } else if (node is String && node.length > 8) {
         for (final part in node.split(RegExp(r'[;\n]'))) {
-          final parsed = _pointFromIntradayString(part, realtime);
+          final parsed = _pointFromIntradayString(part, realtime, fallbackNav);
           if (parsed != null) rows.add(parsed);
         }
       }
@@ -1262,7 +1201,7 @@ class FundService {
     return result.map((entry) => entry.value).toList();
   }
 
-  IntradayPoint? _pointFromIntradayRow(dynamic row, RealtimeEstimate? realtime) {
+  IntradayPoint? _pointFromIntradayRow(dynamic row, RealtimeEstimate? realtime, double fallbackNav) {
     if (row is List && row.length >= 3) {
       final time = parseIntradayTime(row[0]);
       final nav = toDouble(row[1]);
@@ -1278,23 +1217,28 @@ class FundService {
       final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav;
       nav = base * (1 + change / 100);
     }
+    if ((nav == null || nav <= 0) && fallbackNav > 0) nav = fallbackNav * (1 + change / 100);
     if (nav == null || nav <= 0) return null;
     return IntradayPoint(time: time, estimatedNav: nav, changePct: change);
   }
 
-  IntradayPoint? _pointFromIntradayString(String value, RealtimeEstimate? realtime) {
+  IntradayPoint? _pointFromIntradayString(String value, RealtimeEstimate? realtime, double fallbackNav) {
     final text = value.trim();
     if (text.isEmpty) return null;
     final pieces = text.split(RegExp(r'[,|，\s]+')).where((item) => item.isNotEmpty).toList();
     if (pieces.length < 3) return null;
+    final indexedTime = parseIntradayTime(pieces[1]);
+    final indexedChange = toNullableDouble(pieces[2]);
+    if (indexedTime != null && indexedChange != null && RegExp(r'^\d+$').hasMatch(pieces[0])) {
+      final nav = navFromChange(indexedChange, realtime, fallbackNav);
+      if (nav <= 0) return null;
+      return IntradayPoint(time: indexedTime, estimatedNav: nav, changePct: indexedChange);
+    }
     final time = parseIntradayTime(pieces[0]);
     var nav = toDouble(pieces[1]);
     final change = toNullableDouble(pieces[2]);
     if (time == null || change == null) return null;
-    if (nav <= 0 && realtime != null) {
-      final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav;
-      nav = base * (1 + change / 100);
-    }
+    if (nav <= 0) nav = navFromChange(change, realtime, fallbackNav);
     if (nav <= 0) return null;
     return IntradayPoint(time: time, estimatedNav: nav, changePct: change);
   }
@@ -1445,24 +1389,11 @@ class FundService {
                 : '震荡';
     final valuationState = valuationText(drawdown: drawdown, last20: last20);
     final trendState = trendText(decisionNav: decisionNav, ma20: ma20, ma120: ma120, ma250: ma250, market: market);
-    final step = max(item.gridStepPct, 0.5);
-    final costDeviation = item.costNav > 0 ? (decisionNav / item.costNav - 1) * 100 : null;
-    final costDeviationText = costDeviation == null ? '等待设置成本与份额' : '${pct(costDeviation)}（成本 ${item.costNav.toStringAsFixed(4)}）';
-    var gridTrigger = '未触发';
-    var gridBuyRatio = 0.0;
-    var gridSellRatio = 0.0;
-    if (costDeviation == null) {
-      gridTrigger = '设置后自动计算买卖金额';
-    } else if (costDeviation <= -step * 2) {
-      gridTrigger = '触发二档买入，偏离超过 -${(step * 2).toStringAsFixed(1)}%';
-      gridBuyRatio = 0.12;
-    } else if (costDeviation <= -step) {
-      gridTrigger = '触发一档买入，偏离超过 -${step.toStringAsFixed(1)}%';
-      gridBuyRatio = 0.06;
-    } else if (costDeviation >= max(5, step * 2.5)) {
-      gridTrigger = '触发分批止盈，偏离超过 +${max(5, step * 2.5).toStringAsFixed(1)}%';
-      gridSellRatio = 0.20;
-    }
+    final amountLevel = item.amount >= 30000
+        ? '仓位偏重'
+        : item.amount >= 10000
+            ? '中等仓位'
+            : '轻仓';
 
     var buyRatio = 0.0;
     var sellRatio = 0.0;
@@ -1488,19 +1419,14 @@ class FundService {
       buyRatio = 0.0;
       sellRatio = max(sellRatio, 0.10);
     }
-    if (isLiquor && confidence == '低' && gridBuyRatio == 0) {
+    if (isLiquor && confidence == '低') {
       buyRatio = min(buyRatio, 0.05);
       if (buyRatio == 0) action = '观望，不追涨';
     }
-    if (gridBuyRatio > 0) {
-      action = '网格触发，小额加仓';
-      buyRatio = max(buyRatio, gridBuyRatio);
-      sellRatio = 0.0;
-    }
-    if (gridSellRatio > 0) {
-      action = '达到止盈线，分批卖出';
-      sellRatio = max(sellRatio, gridSellRatio);
-      buyRatio = 0.0;
+    if (amountLevel == '仓位偏重' && (todayPct < -0.8 || majorNegative != null || valuationState.startsWith('偏高'))) {
+      sellRatio = max(sellRatio, 0.10);
+      buyRatio = min(buyRatio, 0.03);
+      if (sellRatio > 0) action = '仓位重可小幅减';
     }
     buyRatio = buyRatio.clamp(0.0, 0.30).toDouble();
     sellRatio = sellRatio.clamp(0.0, 0.40).toDouble();
@@ -1515,25 +1441,28 @@ class FundService {
         : trendState.contains('跌破') || trendState.contains('偏弱')
             ? 'bad'
             : 'warn';
-    final deviationTone = costDeviation == null
-        ? 'warn'
-        : gridBuyRatio > 0 || gridSellRatio > 0
+    final positionTone = sellRatio > 0 && amountLevel == '仓位偏重'
+        ? 'bad'
+        : buyRatio > 0 && amountLevel == '轻仓'
             ? 'good'
             : 'warn';
     final decisionSummary = buyRatio == 0 && sellRatio == 0
         ? '观望为主，等待确认。'
         : '$action；可买 ${ratioText(buyRatio)}，可卖 ${ratioText(sellRatio)}。';
+    final amountRule = buyRatio == 0 && sellRatio == 0
+        ? '未触发买卖动作，持有金额只作为换算基数'
+        : '按持有金额计算：买入 ${money(item.amount * buyRatio)}，卖出 ${money(item.amount * sellRatio)}';
     final decision = DecisionModel(
       confidence: confidence == '低' ? '信号不足' : '信号中等',
       valuationState: valuationState,
       valuationTone: valuationTone,
       trendState: trendState,
       trendTone: trendTone,
-      costDeviationText: costDeviationText,
-      deviationTone: deviationTone,
-      gridTrigger: gridTrigger,
+      costDeviationText: '$amountLevel：${money(item.amount)}',
+      deviationTone: positionTone,
+      gridTrigger: amountRule,
       summary: decisionSummary,
-      reason: '14:50 先看估值位置，再看均线风向，最后看你的成本偏离。最终净值以基金公司晚间公布为准。',
+      reason: '14:50 先看估值位置，再看均线风向和当天事件，最后按你填的持有金额换算买卖金额。最终净值以基金公司晚间公布为准。',
     );
 
     final todayReason = [
@@ -1548,12 +1477,18 @@ class FundService {
     ].join('');
 
     final actionReason = [
-      '买入按计划新增仓位计算，卖出按当前该基金持仓计算。',
+      '买入和卖出都按你填的持有金额 ${money(item.amount)} 计算。',
       confidence == '低' ? '当前市场震荡，明日趋势暂不明朗。' : '明日更偏$tomorrowTrend，但仍要等盘中量价确认。',
-      costDeviation == null ? '设置成本与份额后，会自动算出 14:50 是否触发网格。' : '成本偏离：$costDeviationText，网格：$gridTrigger。',
       if (isLiquor) '白酒处在修复波动期，重点看消费情绪、估值和龙头公告。',
       if (majorNegative != null) '重大负面公告出现后，短期情绪可能被压制。',
     ].join('');
+
+    final buyReason = buyRatio > 0
+        ? '可买 ${ratioText(buyRatio)}，约 ${money(item.amount * buyRatio)}。原因：$valuationState；$trendState；今日${todayState}，但按小比例执行，避免追高。'
+        : '暂不买。原因：$valuationState；$trendState；今日${todayState}，还没有出现足够强的加仓信号。';
+    final sellReason = sellRatio > 0
+        ? '可卖 ${ratioText(sellRatio)}，约 ${money(item.amount * sellRatio)}。原因：${majorNegative != null ? '出现重大负面公告；' : ''}${amountLevel == '仓位偏重' ? '当前持仓金额偏重；' : ''}$trendState，先用小比例降风险。'
+        : '暂不卖。原因：没有明显破位或连续过热信号，若你本来仓位不重，短线波动不适合直接清仓。';
 
     return FundAnalysis(
       code: fund.code,
@@ -1572,6 +1507,8 @@ class FundService {
       confidence: confidence,
       todayReason: todayReason,
       actionReason: actionReason,
+      buyReason: buyReason,
+      sellReason: sellReason,
       summaryLine: '$todayState · 明天$tomorrowTrend · $action',
       realtimeAvailable: hasFundRealtime,
       realtimeNavText: hasFundRealtime ? realtime!.estimatedNav.toStringAsFixed(4) : last.value.toStringAsFixed(4),
@@ -1590,24 +1527,17 @@ class FundService {
 }
 
 class PortfolioItem {
-  PortfolioItem({required this.code, required this.amount, this.costNav = 0, this.shares = 0, this.gridStepPct = 2.0});
+  PortfolioItem({required this.code, required this.amount});
 
   final String code;
   final double amount;
-  final double costNav;
-  final double shares;
-  final double gridStepPct;
-  bool get hasCostBasis => costNav > 0;
 
   factory PortfolioItem.fromJson(Map<String, dynamic> json) => PortfolioItem(
         code: json['code'].toString(),
         amount: toDouble(json['amount']),
-        costNav: toDouble(json['costNav']),
-        shares: toDouble(json['shares']),
-        gridStepPct: toDouble(json['gridStepPct']) <= 0 ? 2.0 : toDouble(json['gridStepPct']),
       );
 
-  Map<String, dynamic> toJson() => {'code': code, 'amount': amount, 'costNav': costNav, 'shares': shares, 'gridStepPct': gridStepPct};
+  Map<String, dynamic> toJson() => {'code': code, 'amount': amount};
 }
 
 class PortfolioSummary {
@@ -1766,6 +1696,8 @@ class FundAnalysis {
     required this.confidence,
     required this.todayReason,
     required this.actionReason,
+    required this.buyReason,
+    required this.sellReason,
     required this.summaryLine,
     required this.realtimeAvailable,
     required this.realtimeNavText,
@@ -1795,6 +1727,8 @@ class FundAnalysis {
   final String confidence;
   final String todayReason;
   final String actionReason;
+  final String buyReason;
+  final String sellReason;
   final String summaryLine;
   final bool realtimeAvailable;
   final String realtimeNavText;
@@ -1846,6 +1780,20 @@ String? extractJsonLike(String raw) {
   return trimmed.substring(start, end + 1);
 }
 
+dynamic decodeNestedFundPayload(dynamic payload) {
+  if (payload is Map && payload['data'] is String) {
+    final text = (payload['data'] as String).trim();
+    if (text.isNotEmpty) {
+      try {
+        return jsonDecode(text);
+      } catch (_) {
+        return payload;
+      }
+    }
+  }
+  return payload;
+}
+
 dynamic firstValue(Map<dynamic, dynamic> row, List<String> keys) {
   for (final key in keys) {
     if (row.containsKey(key)) return row[key];
@@ -1861,6 +1809,23 @@ double? firstNumber(Map<dynamic, dynamic> row, List<String> keys) {
   final value = firstValue(row, keys);
   if (value == null) return null;
   return toNullableDouble(value);
+}
+
+double navFromChange(double change, RealtimeEstimate? realtime, double fallbackNav) {
+  final base = realtime == null
+      ? fallbackNav
+      : realtime.officialNav > 0
+          ? realtime.officialNav
+          : realtime.estimatedNav / (1 + realtime.estimatePct / 100);
+  if (base <= 0) return 0;
+  return base * (1 + change / 100);
+}
+
+int minimumMinutePointCount() {
+  final now = DateTime.now();
+  final elapsed = tradingMinute(now);
+  if (elapsed <= 0) return 8;
+  return min(132, max(8, (elapsed * 0.55).round()));
 }
 
 DateTime? parseIntradayTime(dynamic value) {
@@ -1891,24 +1856,6 @@ DateTime? parseIntradayTime(dynamic value) {
   return DateTime.tryParse(text);
 }
 
-List<IntradayPoint> buildSyntheticIntraday(RealtimeEstimate? realtime) {
-  if (realtime == null || realtime.estimatedNav <= 0) return [];
-  final update = parseIntradayTime(realtime.updateTime) ?? DateTime.now();
-  var endMinute = tradingMinute(update).clamp(0, 240);
-  if (endMinute <= 0) endMinute = 240;
-  final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav / (1 + realtime.estimatePct / 100);
-  final points = <IntradayPoint>[];
-  for (var minute = 0; minute <= endMinute; minute += 5) {
-    final ratio = endMinute == 0 ? 1.0 : minute / endMinute;
-    final wave = sin(ratio * pi * 2) * min(realtime.estimatePct.abs() * 0.16, 0.18);
-    final change = realtime.estimatePct * ratio + wave * (1 - ratio * 0.25);
-    points.add(IntradayPoint(time: timeFromTradingMinute(minute), estimatedNav: base * (1 + change / 100), changePct: change));
-  }
-  final last = IntradayPoint(time: update, estimatedNav: realtime.estimatedNav, changePct: realtime.estimatePct);
-  if (points.isEmpty || tradingMinute(points.last.time) != tradingMinute(last.time)) points.add(last);
-  return points;
-}
-
 Rect chartPlotRect(Size size) => Rect.fromLTWH(42, 10, max(1, size.width - 54), max(1, size.height - 46));
 
 double chartAxisMax(List<IntradayPoint> points, double fallbackPct) {
@@ -1931,23 +1878,7 @@ int tradingMinute(DateTime time) {
   return 240;
 }
 
-DateTime timeFromTradingMinute(int tradingMinute) {
-  final now = DateTime.now();
-  if (tradingMinute <= 120) {
-    final minute = 9 * 60 + 30 + tradingMinute;
-    return DateTime(now.year, now.month, now.day, minute ~/ 60, minute % 60);
-  }
-  final minute = 13 * 60 + (tradingMinute - 120);
-  return DateTime(now.year, now.month, now.day, minute ~/ 60, minute % 60);
-}
-
 String formatClock(DateTime time) => '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-
-String trimNumber(double value) {
-  var text = value.toStringAsFixed(value.abs() >= 100 ? 2 : 4);
-  text = text.replaceFirst(RegExp(r'\.?0+$'), '');
-  return text;
-}
 
 Color toneColor(String tone) {
   if (tone == 'good') return AppColors.red;
@@ -2149,10 +2080,7 @@ String money(double value) {
 String signedMoney(double value) => value >= 0 ? '+${money(value)}' : '-${money(value.abs())}';
 String pct(double value) => '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2)}%';
 
-double positionValue(PortfolioItem item, FundAnalysis? analysis) {
-  if (analysis != null && item.shares > 0 && analysis.latestValue > 0) {
-    return item.shares * analysis.latestValue;
-  }
+double positionValue(PortfolioItem item) {
   return item.amount;
 }
 
