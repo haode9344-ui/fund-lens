@@ -886,6 +886,97 @@ function buildTomorrowSignal(tomorrowDetail, forecastData, impact, marketData) {
   return { direction: tomorrowDetail.direction, reason };
 }
 
+function classifyFundProfile(data) {
+  const name = data.name || "";
+  let type = "主动股票/混合基金";
+  let method = "持仓披露有滞后，只能用前十大持仓、行业风格和净值动量近似。";
+  let tracking = "无明确跟踪指数";
+  if (/债|纯债|短债|中短债|信用债/.test(name)) {
+    type = "债券基金";
+    method = "重点看利率、债券指数、信用风险和股债跷跷板。";
+    tracking = "债券市场/利率环境";
+  } else if (/QDII|全球|海外|纳斯达克|标普|恒生|港股|美元|美国/.test(name)) {
+    type = "QDII/海外基金";
+    method = "重点看海外市场、汇率和时差，支付宝当日估值可能滞后。";
+    tracking = /纳斯达克/.test(name) ? "纳斯达克" : /恒生|港股/.test(name) ? "港股/恒生相关指数" : "海外市场";
+  } else if (/指数|ETF|联接|LOF|增强/.test(name)) {
+    type = "指数基金/ETF联接";
+    method = "重点看对应指数、行业指数、成交量、均线和估值位置。";
+    const match = name.match(/中证[^()（）A-Z]+|沪深300|中证500|创业板|科创|恒生科技|纳斯达克|白酒|医药|半导体|新能源|军工/);
+    tracking = match ? match[0] : "对应指数/行业指数";
+  }
+  let industry = data.impact?.topIndustries?.[0]?.name || "行业暂缺";
+  if (industry === "未知" || industry === "undefined") {
+    if (/白酒/.test(name)) industry = "白酒";
+    else if (/医药|医疗/.test(name)) industry = "医药";
+    else if (/半导体|芯片/.test(name)) industry = "半导体";
+    else if (/新能源|电池|光伏/.test(name)) industry = "新能源";
+    else if (/军工/.test(name)) industry = "军工";
+  }
+  const risk =
+    data.forecast.volatilityPct > 1.8 || data.forecast.maxDrawdownPct < -25
+      ? "高"
+      : data.forecast.volatilityPct > 1 || data.forecast.maxDrawdownPct < -12
+        ? "中"
+        : "中低";
+  return { type, tracking, industry, risk, method };
+}
+
+function buyScore(data, todaySignal, tomorrowDetail) {
+  const f = data.forecast;
+  let score = 50;
+  const reasons = [];
+  if ((f.lastReturnsPct?.["20d"] || 0) > 0) {
+    score += 10;
+    reasons.push("20日趋势修复");
+  } else {
+    score -= 6;
+    reasons.push("20日趋势未修复");
+  }
+  if ((f.lastReturnsPct?.["5d"] || 0) > 0) {
+    score += 8;
+    reasons.push("短线动量为正");
+  } else {
+    score -= 8;
+    reasons.push("短线动量偏弱");
+  }
+  if (f.maxDrawdownPct < -18 && (f.lastReturnsPct?.["5d"] || 0) > 0) {
+    score += 10;
+    reasons.push("回撤较深后有修复迹象");
+  } else if (f.maxDrawdownPct < -25) {
+    score -= 8;
+    reasons.push("回撤过深，风险仍高");
+  }
+  if (f.volatilityPct > 1.8) {
+    score -= 12;
+    reasons.push("波动偏大");
+  } else if (f.volatilityPct < 0.9) {
+    score += 5;
+    reasons.push("波动可控");
+  }
+  if ((data.impact?.todayContributionPct || 0) > 0.25) {
+    score += 8;
+    reasons.push("重仓股今天有贡献");
+  } else if ((data.impact?.todayContributionPct || 0) < -0.25) {
+    score -= 10;
+    reasons.push("重仓股今天拖累");
+  }
+  if (todaySignal.direction.includes("涨") || todaySignal.direction.includes("强")) score += 6;
+  if (todaySignal.direction.includes("跌") || todaySignal.direction.includes("弱")) score -= 6;
+  if (tomorrowDetail.confidence === "低") {
+    score -= 6;
+    reasons.push("明日判断置信度低");
+  }
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  let action = "观望";
+  if (score >= 80) action = "可分批买入";
+  else if (score >= 60) action = "小额定投";
+  else if (score >= 40) action = "观望";
+  else if (score >= 20) action = "等待回调";
+  else action = "风险偏高，不追";
+  return { score, action, reasons: reasons.slice(0, 5) };
+}
+
 function compactMetric(label, value) {
   return `<article class="metric"><span>${label}</span><strong>${value}</strong></article>`;
 }
@@ -916,12 +1007,20 @@ function render(data) {
   const tomorrowDate = addTradingDays(todayDate, 1);
   const todaySignal = buildTodaySignal(forecastData, data.impact, marketData, data.holdings || []);
   const tomorrowSignal = buildTomorrowSignal(tomorrowDetail, forecastData, data.impact, marketData);
+  const profile = classifyFundProfile(data);
+  const score = buyScore(data, todaySignal, tomorrowDetail);
 
   sourceBadge.textContent = data.source;
   summary.innerHTML = `
     <div class="fund-overview">
       <p class="eyebrow">${data.code} · 最新净值 ${data.latest.value} · 净值日 ${data.latest.date}</p>
       <h2 class="fund-name">${data.name}</h2>
+      <div class="profile-strip">
+        <span>类型：${profile.type}</span>
+        <span>跟踪/参考：${profile.tracking}</span>
+        <span>行业：${profile.industry}</span>
+        <span>风险：${profile.risk}</span>
+      </div>
       <div class="day-cards">
         <article class="day-card ${signalClass(todaySignal.direction)}">
           <span>今天 ${formatDisplayDate(todayDate)}</span>
@@ -940,14 +1039,14 @@ function render(data) {
   metrics.hidden = false;
   const ma = forecastData.movingAverage || {};
   metrics.innerHTML = [
+    compactMetric("买入评分", `${score.score}/100`),
+    compactMetric("建议动作", score.action),
     compactMetric("今日市场", `${marketData.label}${marketData.averageChange ? ` ${pct(marketData.averageChange)}` : ""}`),
     compactMetric("重仓影响", pct(data.impact.todayContributionPct || 0)),
     compactMetric("短期动量", `5日 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}`),
     compactMetric("明日区间", `${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}`),
     compactMetric("30日波动", `${forecastData.volatilityPct}%`),
     compactMetric("90日回撤", `${forecastData.maxDrawdownPct}%`),
-    compactMetric("均线", `MA5 ${ma.ma5 || "-"} / MA20 ${ma.ma20 || "-"}`),
-    compactMetric("置信度", tomorrowDetail.confidence || "中"),
   ].join("");
 
   analysisPanel.hidden = false;
@@ -960,15 +1059,16 @@ function render(data) {
   `;
   detailGrid.innerHTML = [
     { label: "数据依据", value: `最新净值日 ${data.latest.date}，30日波动 ${forecastData.volatilityPct}%，90日最大回撤 ${forecastData.maxDrawdownPct}%。` },
+    { label: "基金类型", value: `${profile.type}。${profile.method}` },
     { label: "上涨条件", value: `市场基准转强、重仓股贡献转正、近5日动量继续保持正值。` },
-    { label: "下跌风险", value: `重仓股走弱、行业利空、指数回落，或净值跌破短期均线。` },
+    { label: "可能错的原因", value: `持仓披露滞后、基金经理调仓、净值晚上更新、15:00申购规则、外部新闻和估值误差。` },
   ]
     .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)
     .join("");
   reviewList.innerHTML = [
     { title: "为什么今天可能涨/跌", reason: todaySignal.reason },
     { title: "为什么明天可能涨/跌", reason: tomorrowSignal.reason },
-    { title: "买入怎么判断", reason: data.buyView?.reason || "信号不够强时，只适合小额分批，不适合一次性重仓。" },
+    { title: "买入怎么判断", reason: `当前评分 ${score.score}/100，动作：${score.action}。依据：${score.reasons.join("、")}。不要一次性重仓，优先分批和控制仓位。` },
   ]
     .map((item) => `<article class="review-item"><strong>${item.title}</strong><span>${item.reason}</span></article>`)
     .join("");
@@ -995,7 +1095,7 @@ function render(data) {
         <article class="holding">
           <div>
             <strong>${item.name}</strong>
-            <span>${item.code} · ${item.industry}</span>
+            <span>${item.code} · ${item.industry || "行业暂缺"}</span>
           </div>
           <div class="holding-numbers">
             <b class="${direction}">${pct(item.changePct ?? 0)}</b>
