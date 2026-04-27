@@ -9,9 +9,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ICONSET = ROOT / "ios" / "Runner" / "Assets.xcassets" / "AppIcon.appiconset"
+ICON_ASSETS = ROOT / "tool" / "icon_assets"
 
 
 def font_icon_bytes(size: int) -> bytes | None:
+    prebuilt = ICON_ASSETS / f"icon-{size}.png"
+    if prebuilt.exists():
+        return prebuilt.read_bytes()
+
     try:
         from PIL import Image, ImageDraw, ImageFont
     except Exception:
