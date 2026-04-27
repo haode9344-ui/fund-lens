@@ -654,8 +654,8 @@ async function loadFund(code) {
   const canUseBackend = !forceStatic && (!location.hostname.endsWith("github.io") || backendBase);
   if (canUseBackend) {
     try {
-      setBackendStatus(backendBase ? `正在连接后端：${backendBase}` : "正在连接本机后端...");
-      const response = await fetchJson(backendUrl(`/api/fund/${code}`), 22000);
+      setBackendStatus(backendBase ? `正在连接后端：${backendBase}，第一次可能要等几十秒。` : "正在连接本机后端...");
+      const response = await fetchJson(backendUrl(`/api/fund/${code}`), 65000);
       if (response.ok) {
         const payload = await response.json();
         if (payload.ok) {
@@ -665,7 +665,7 @@ async function loadFund(code) {
       }
     } catch (error) {
       const target = backendBase ? "后端" : "本机后端";
-      setBackendStatus(`${target}暂时没连上，已切到纯前端行情模式。`, "warn");
+      setBackendStatus(`${target}响应超时或暂时没连上，已先切到纯前端行情模式。`, "warn");
     }
   }
   if (forceStatic) setBackendStatus("纯前端模式，不连接后端。", "warn");
