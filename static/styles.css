@@ -149,7 +149,7 @@ h2 {
 }
 
 .hero-result {
-  min-height: 210px;
+  min-height: 240px;
   overflow: hidden;
   padding: 22px;
 }
@@ -165,6 +165,54 @@ h2 {
   display: grid;
   gap: 22px;
   grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
+}
+
+.fund-overview {
+  display: grid;
+  gap: 18px;
+}
+
+.day-cards {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.day-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-height: 180px;
+  padding: 16px;
+}
+
+.day-card span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.day-card strong {
+  font-size: clamp(32px, 7vw, 56px);
+  line-height: 0.98;
+}
+
+.day-card p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.day-card.up strong {
+  color: var(--red);
+}
+
+.day-card.down strong {
+  color: var(--green);
+}
+
+.day-card.flat strong {
+  color: var(--amber);
 }
 
 .fund-name {
@@ -527,6 +575,7 @@ h2 {
 @media (max-width: 760px) {
   .topbar,
   .result-layout,
+  .day-cards,
   .panel-heading,
   .holding {
     align-items: stretch;

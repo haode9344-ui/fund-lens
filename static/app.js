@@ -834,6 +834,185 @@ function drawChart(history) {
   ctx.fillText(history.at(-1).date.slice(5), width - padding.right - 36, height - 8);
 }
 
+function formatDisplayDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addTradingDays(fromDate, days) {
+  const date = new Date(fromDate);
+  let left = days;
+  while (left > 0) {
+    date.setDate(date.getDate() + 1);
+    const weekday = date.getDay();
+    if (weekday !== 0 && weekday !== 6) left -= 1;
+  }
+  return date;
+}
+
+function signalClass(text) {
+  if (text.includes("跌") || text.includes("弱")) return "down";
+  if (text.includes("震荡")) return "flat";
+  return "up";
+}
+
+function buildTodaySignal(forecastData, impact, marketData, holdings) {
+  let score = 0;
+  if ((marketData.averageChange || 0) > 0.45) score += 1;
+  if ((marketData.averageChange || 0) < -0.45) score -= 1;
+  if ((impact.todayContributionPct || 0) > 0.2) score += 1;
+  if ((impact.todayContributionPct || 0) < -0.2) score -= 1;
+  if ((forecastData.lastReturnsPct?.["5d"] || 0) > 1) score += 1;
+  if ((forecastData.lastReturnsPct?.["5d"] || 0) < -1) score -= 1;
+
+  let direction = "震荡";
+  if (score >= 2) direction = "可能上涨";
+  else if (score === 1) direction = "震荡偏强";
+  else if (score === -1) direction = "震荡偏弱";
+  else if (score <= -2) direction = "可能下跌";
+
+  const activeHolding = holdings.find((item) => typeof item.changePct === "number");
+  const holdingReason = activeHolding
+    ? `${activeHolding.name} 今日 ${pct(activeHolding.changePct || 0)}，前十大持仓估算贡献 ${pct(impact.todayContributionPct || 0)}。`
+    : `重仓股实时行情暂缺，先用基金短期动量和市场基准判断。`;
+  const reason = `市场基准：${marketData.label}${marketData.averageChange ? `（${pct(marketData.averageChange)}）` : ""}。${holdingReason}短期动量：近5日 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}。`;
+  return { direction, reason, score };
+}
+
+function buildTomorrowSignal(tomorrowDetail, forecastData, impact, marketData) {
+  const reason = `中心估计 ${pct(tomorrowDetail.expectedPct)}，常见波动 ${pct(tomorrowDetail.rangePct[0])} 到 ${pct(tomorrowDetail.rangePct[1])}。判断依据是近5日动量 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}、市场基准 ${marketData.label}、重仓贡献 ${pct(impact.todayContributionPct || 0)}。${tomorrowDetail.conclusion}`;
+  return { direction: tomorrowDetail.direction, reason };
+}
+
+function compactMetric(label, value) {
+  return `<article class="metric"><span>${label}</span><strong>${value}</strong></article>`;
+}
+
+function render(data) {
+  const forecastData = data.forecast;
+  if (!forecastData.detailReturns) {
+    forecastData.detailReturns = {
+      "5d": returnDetails(data.history, 5),
+      "10d": returnDetails(data.history, 10),
+      "20d": returnDetails(data.history, 20),
+    };
+  }
+  if (!forecastData.tomorrow) {
+    forecastData.tomorrow = {
+      expectedPct: forecastData.expectedPct / Math.max(forecastData.horizonDays, 1),
+      rangePct: [
+        forecastData.rangePct[0] / Math.max(forecastData.horizonDays, 1),
+        forecastData.rangePct[1] / Math.max(forecastData.horizonDays, 1),
+      ],
+      probabilityUp: forecastData.probabilityUp,
+    };
+  }
+
+  const marketData = data.market || marketFromTrend(forecastData);
+  const tomorrowDetail = data.tomorrowDetail || tomorrowDeepDive(forecastData, data.impact, marketData, data.holdings || []);
+  const todayDate = new Date();
+  const tomorrowDate = addTradingDays(todayDate, 1);
+  const todaySignal = buildTodaySignal(forecastData, data.impact, marketData, data.holdings || []);
+  const tomorrowSignal = buildTomorrowSignal(tomorrowDetail, forecastData, data.impact, marketData);
+
+  sourceBadge.textContent = data.source;
+  summary.innerHTML = `
+    <div class="fund-overview">
+      <p class="eyebrow">${data.code} · 最新净值 ${data.latest.value} · 净值日 ${data.latest.date}</p>
+      <h2 class="fund-name">${data.name}</h2>
+      <div class="day-cards">
+        <article class="day-card ${signalClass(todaySignal.direction)}">
+          <span>今天 ${formatDisplayDate(todayDate)}</span>
+          <strong>${todaySignal.direction}</strong>
+          <p>${todaySignal.reason}</p>
+        </article>
+        <article class="day-card ${signalClass(tomorrowSignal.direction)}">
+          <span>明天 ${formatDisplayDate(tomorrowDate)}</span>
+          <strong>${tomorrowSignal.direction}</strong>
+          <p>${tomorrowSignal.reason}</p>
+        </article>
+      </div>
+    </div>
+  `;
+
+  metrics.hidden = false;
+  const ma = forecastData.movingAverage || {};
+  metrics.innerHTML = [
+    compactMetric("今日市场", `${marketData.label}${marketData.averageChange ? ` ${pct(marketData.averageChange)}` : ""}`),
+    compactMetric("重仓影响", pct(data.impact.todayContributionPct || 0)),
+    compactMetric("短期动量", `5日 ${pct(forecastData.lastReturnsPct?.["5d"] || 0)}`),
+    compactMetric("明日区间", `${pct(tomorrowDetail.rangePct[0])} 至 ${pct(tomorrowDetail.rangePct[1])}`),
+    compactMetric("30日波动", `${forecastData.volatilityPct}%`),
+    compactMetric("90日回撤", `${forecastData.maxDrawdownPct}%`),
+    compactMetric("均线", `MA5 ${ma.ma5 || "-"} / MA20 ${ma.ma20 || "-"}`),
+    compactMetric("置信度", tomorrowDetail.confidence || "中"),
+  ].join("");
+
+  analysisPanel.hidden = false;
+  tomorrowBadge.textContent = `今天 ${todaySignal.direction} · 明天 ${tomorrowSignal.direction}`;
+  tomorrowCard.innerHTML = `
+    <strong>今天 ${formatDisplayDate(todayDate)}：${todaySignal.direction}</strong>
+    <p>${todaySignal.reason}</p>
+    <strong>明天 ${formatDisplayDate(tomorrowDate)}：${tomorrowSignal.direction}</strong>
+    <p>${tomorrowSignal.reason}</p>
+  `;
+  detailGrid.innerHTML = [
+    { label: "数据依据", value: `最新净值日 ${data.latest.date}，30日波动 ${forecastData.volatilityPct}%，90日最大回撤 ${forecastData.maxDrawdownPct}%。` },
+    { label: "上涨条件", value: `市场基准转强、重仓股贡献转正、近5日动量继续保持正值。` },
+    { label: "下跌风险", value: `重仓股走弱、行业利空、指数回落，或净值跌破短期均线。` },
+  ]
+    .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)
+    .join("");
+  reviewList.innerHTML = [
+    { title: "为什么今天可能涨/跌", reason: todaySignal.reason },
+    { title: "为什么明天可能涨/跌", reason: tomorrowSignal.reason },
+    { title: "买入怎么判断", reason: data.buyView?.reason || "信号不够强时，只适合小额分批，不适合一次性重仓。" },
+  ]
+    .map((item) => `<article class="review-item"><strong>${item.title}</strong><span>${item.reason}</span></article>`)
+    .join("");
+
+  holdingsPanel.hidden = false;
+  impactBadge.textContent = `${data.impact.label} · ${pct(data.impact.todayContributionPct || 0)}`;
+  const industryText = data.impact.topIndustries.map((item) => `${item.name} ${item.holdingPct}%`).join(" / ");
+  buyViewEl.innerHTML = `
+    <strong>${data.buyView.stance}</strong>
+    <span>${data.buyView.reason}</span>
+    <small>风险：${data.buyView.riskLevel} · 前十大持仓占净值 ${data.impact.topHoldingExposurePct}% · ${industryText}</small>
+  `;
+  explainGrid.innerHTML = [
+    { label: "市场环境", value: data.explanation?.market || marketData.label },
+    { label: "今天以后原因", value: data.explanation?.move || tomorrowSignal.reason },
+    { label: "影响事件", value: data.explanation?.events || "资金流向、行业政策、重仓股公告" },
+  ]
+    .map((item) => `<article class="explain"><span>${item.label}</span><strong>${item.value}</strong></article>`)
+    .join("");
+  holdingsList.innerHTML = (data.holdings || [])
+    .map((item) => {
+      const direction = (item.changePct || 0) >= 0 ? "hot" : "cold";
+      return `
+        <article class="holding">
+          <div>
+            <strong>${item.name}</strong>
+            <span>${item.code} · ${item.industry}</span>
+          </div>
+          <div class="holding-numbers">
+            <b class="${direction}">${pct(item.changePct ?? 0)}</b>
+            <span>占 ${item.holdingPct}% · 贡献 ${pct(item.estimatedContributionPct ?? 0)}</span>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  latestDate.textContent = data.latest.date;
+  chartPanel.hidden = false;
+  drawChart(data.history);
+  notes.hidden = false;
+  notes.textContent = "这是基于公开净值、市场基准、波动率、均线和重仓股影响的情景分析，不是确定预测，也不构成投资建议。";
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const code = input.value.trim();
