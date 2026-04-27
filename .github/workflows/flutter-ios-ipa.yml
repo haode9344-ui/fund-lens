@@ -1,4 +1,4 @@
-name: Build Flutter iOS IPA
+name: Build Xiaoyou iOS IPA
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
 
 jobs:
   build-ios-ipa:
-    name: Build unsigned iOS IPA
+    name: Build unsigned Xiaoyou IPA
     runs-on: macos-latest
 
     defaults:
@@ -38,9 +38,12 @@ jobs:
 
       - name: Configure iOS app metadata
         run: |
-          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 基金雷达" ios/Runner/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleName FundLens" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 小又" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName Xiaoyou" ios/Runner/Info.plist
           sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = com.haode9344.fundlens;/g' ios/Runner.xcodeproj/project.pbxproj
+
+      - name: Generate Xiaoyou app icon
+        run: python3 tool/make_ios_icons.py
 
       - name: Get dependencies
         run: flutter pub get
@@ -56,14 +59,14 @@ jobs:
         run: |
           rm -rf build/ipa
           mkdir -p build/ipa/Payload
-          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/FundLens.app
+          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/Xiaoyou.app
           cd build/ipa
-          /usr/bin/zip -qry fund-lens-unsigned.ipa Payload
-          ls -lh fund-lens-unsigned.ipa
+          /usr/bin/zip -qry xiaoyou-unsigned.ipa Payload
+          ls -lh xiaoyou-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fund-lens-ios-unsigned-ipa
-          path: flutter_app/build/ipa/fund-lens-unsigned.ipa
+          name: xiaoyou-ios-unsigned-ipa
+          path: flutter_app/build/ipa/xiaoyou-unsigned.ipa
           if-no-files-found: error
