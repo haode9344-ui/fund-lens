@@ -133,13 +133,26 @@ class _PortfolioHomeState extends State<PortfolioHome> {
     await _saveCurrent();
   }
 
+  Future<FundAnalysis> _updateFund(PortfolioItem updated) async {
+    final target = _tab == 0 ? _owned : _simulated;
+    final index = target.indexWhere((item) => item.code == updated.code);
+    if (index >= 0) {
+      setState(() => target[index] = updated);
+      await _saveCurrent();
+    }
+    final fresh = await _service.load(updated);
+    if (mounted) setState(() => _cache[updated.code] = fresh);
+    return fresh;
+  }
+
   PortfolioSummary _summary() {
     double amount = 0;
     double income = 0;
     for (final item in _currentItems) {
-      amount += item.amount;
       final analysis = _cache[item.code];
-      if (analysis != null) income += item.amount * analysis.todayPct / 100;
+      final value = positionValue(item, analysis);
+      amount += value;
+      if (analysis != null) income += value * analysis.todayPct / 100;
     }
     return PortfolioSummary(amount: amount, todayIncome: income);
   }
@@ -203,11 +216,7 @@ class _PortfolioHomeState extends State<PortfolioHome> {
                                     builder: (_) => FundDetailPage(
                                       item: item,
                                       analysis: analysis,
-                                      onRefresh: () async {
-                                        final fresh = await _service.load(item);
-                                        if (mounted) setState(() => _cache[item.code] = fresh);
-                                        return fresh;
-                                      },
+                                      onUpdateItem: _updateFund,
                                     ),
                                   ),
                                 );
@@ -348,7 +357,8 @@ class FundPositionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final data = analysis;
-    final todayIncome = data == null ? 0.0 : item.amount * data.todayPct / 100;
+    final currentValue = positionValue(item, data);
+    final todayIncome = data == null ? 0.0 : currentValue * data.todayPct / 100;
     final positive = todayIncome >= 0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -383,7 +393,7 @@ class FundPositionCard extends StatelessWidget {
               const SizedBox(height: 16),
               Row(
                 children: [
-                  Expanded(child: _Metric(label: '持有金额', value: money(item.amount))),
+                  Expanded(child: _Metric(label: item.shares > 0 ? '估算市值' : '持有金额', value: money(currentValue))),
                   Expanded(
                     child: _Metric(
                       label: '实时估算',
@@ -423,29 +433,45 @@ class FundDetailPage extends StatefulWidget {
     super.key,
     required this.item,
     required this.analysis,
-    required this.onRefresh,
+    required this.onUpdateItem,
   });
 
   final PortfolioItem item;
   final FundAnalysis analysis;
-  final Future<FundAnalysis> Function() onRefresh;
+  final Future<FundAnalysis> Function(PortfolioItem) onUpdateItem;
 
   @override
   State<FundDetailPage> createState() => _FundDetailPageState();
 }
 
 class _FundDetailPageState extends State<FundDetailPage> {
+  late PortfolioItem _item = widget.item;
   late FundAnalysis _analysis = widget.analysis;
 
   Future<void> _refresh() async {
-    final fresh = await widget.onRefresh();
+    final fresh = await widget.onUpdateItem(_item);
+    if (mounted) setState(() => _analysis = fresh);
+  }
+
+  Future<void> _editPosition() async {
+    final result = await showModalBottomSheet<PortfolioItem>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => AddFundSheet(title: '持仓信息', initialItem: _item),
+    );
+    if (result == null) return;
+    setState(() => _item = result);
+    final fresh = await widget.onUpdateItem(result);
     if (mounted) setState(() => _analysis = fresh);
   }
 
   @override
   Widget build(BuildContext context) {
-    final buyAmount = widget.item.amount * _analysis.buyRatio;
-    final sellAmount = widget.item.amount * _analysis.sellRatio;
+    final currentValue = positionValue(_item, _analysis);
+    final buyAmount = currentValue * _analysis.buyRatio;
+    final sellAmount = currentValue * _analysis.sellRatio;
+    final hasOperation = buyAmount > 0.01 || sellAmount > 0.01;
     return Scaffold(
       appBar: AppBar(
         title: const Text('基金分析', style: TextStyle(fontWeight: FontWeight.w900)),
@@ -482,15 +508,14 @@ class _FundDetailPageState extends State<FundDetailPage> {
                       Expanded(child: _Metric(label: '更新时间', value: _analysis.realtimeTimeText)),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(color: AppColors.softBlue, borderRadius: BorderRadius.circular(16)),
-                    child: Text(_analysis.todayReason, style: const TextStyle(fontWeight: FontWeight.w800, height: 1.45)),
-                  ),
                 ],
               ),
+            ),
+            const SizedBox(height: 12),
+            IntradayChartCard(
+              points: _analysis.intradayPoints,
+              note: _analysis.intradayNote,
+              fallbackPct: _analysis.todayPct,
             ),
             const SizedBox(height: 12),
             CardShell(
@@ -501,19 +526,34 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   const SizedBox(height: 12),
                   Text(_analysis.action, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(child: _Metric(label: '建议买入', value: money(buyAmount))),
-                      Expanded(child: _Metric(label: '建议卖出', value: money(sellAmount))),
-                    ],
-                  ),
+                  if (hasOperation)
+                    Row(
+                      children: [
+                        if (buyAmount > 0.01) Expanded(child: _Metric(label: '建议买入', value: money(buyAmount), color: AppColors.red)),
+                        if (buyAmount > 0.01 && sellAmount > 0.01) const SizedBox(width: 12),
+                        if (sellAmount > 0.01) Expanded(child: _Metric(label: '建议卖出', value: money(sellAmount), color: AppColors.green)),
+                      ],
+                    )
+                  else
+                    const Text('今日无网格触发点，建议观望。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
+                  if (!_item.hasCostBasis) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _editPosition,
+                        icon: const Icon(CupertinoIcons.slider_horizontal_3),
+                        label: const Text('点击设置持仓成本与份额'),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   Text(_analysis.actionReason, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
                 ],
               ),
             ),
             const SizedBox(height: 12),
-            DecisionModelCard(decision: _analysis.decision),
+            DecisionModelCard(decision: _analysis.decision, needsCostBasis: !_item.hasCostBasis, onEditPosition: _editPosition),
             const SizedBox(height: 12),
             if (_analysis.liquorSpecial != null) ...[
               CardShell(
@@ -551,9 +591,10 @@ class _FundDetailPageState extends State<FundDetailPage> {
 }
 
 class AddFundSheet extends StatefulWidget {
-  const AddFundSheet({super.key, required this.title});
+  const AddFundSheet({super.key, required this.title, this.initialItem});
 
   final String title;
+  final PortfolioItem? initialItem;
 
   @override
   State<AddFundSheet> createState() => _AddFundSheetState();
@@ -563,30 +604,56 @@ class _AddFundSheetState extends State<AddFundSheet> {
   final TextEditingController _codeController = TextEditingController();
   final TextEditingController _amountController = TextEditingController();
   final TextEditingController _costController = TextEditingController();
+  final TextEditingController _sharesController = TextEditingController();
   final TextEditingController _gridController = TextEditingController(text: '2');
+
+  @override
+  void initState() {
+    super.initState();
+    final item = widget.initialItem;
+    if (item == null) return;
+    _codeController.text = item.code;
+    _amountController.text = trimNumber(item.amount);
+    if (item.costNav > 0) _costController.text = trimNumber(item.costNav);
+    if (item.shares > 0) _sharesController.text = trimNumber(item.shares);
+    _gridController.text = trimNumber(item.gridStepPct);
+  }
 
   @override
   void dispose() {
     _codeController.dispose();
     _amountController.dispose();
     _costController.dispose();
+    _sharesController.dispose();
     _gridController.dispose();
     super.dispose();
   }
 
   void _submit() {
     final code = _codeController.text.trim();
-    final amount = double.tryParse(_amountController.text.trim()) ?? 0;
+    var amount = double.tryParse(_amountController.text.trim()) ?? 0;
     final costNav = double.tryParse(_costController.text.trim()) ?? 0;
+    final shares = double.tryParse(_sharesController.text.trim()) ?? 0;
     final gridStep = double.tryParse(_gridController.text.trim()) ?? 2.0;
+    if (amount <= 0 && costNav > 0 && shares > 0) amount = costNav * shares;
     if (!RegExp(r'^\d{6}$').hasMatch(code)) return;
     if (amount <= 0) return;
-    Navigator.pop(context, PortfolioItem(code: code, amount: amount, costNav: costNav, gridStepPct: gridStep <= 0 ? 2.0 : gridStep));
+    Navigator.pop(
+      context,
+      PortfolioItem(
+        code: code,
+        amount: amount,
+        costNav: costNav,
+        shares: shares,
+        gridStepPct: gridStep <= 0 ? 2.0 : gridStep,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
+    final editing = widget.initialItem != null;
     return Padding(
       padding: EdgeInsets.only(bottom: bottom),
       child: Container(
@@ -600,10 +667,11 @@ class _AddFundSheetState extends State<AddFundSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('添加到${widget.title}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+              Text(editing ? '设置持仓成本与份额' : '添加到${widget.title}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
               const SizedBox(height: 14),
               CupertinoTextField(
                 controller: _codeController,
+                enabled: !editing,
                 keyboardType: TextInputType.number,
                 maxLength: 6,
                 placeholder: '搜索基金代码，例如 161725',
@@ -614,7 +682,7 @@ class _AddFundSheetState extends State<AddFundSheet> {
               CupertinoTextField(
                 controller: _amountController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                placeholder: widget.title == '持有持仓' ? '我持有的金额' : '模拟金额',
+                placeholder: editing ? '当前该基金持仓金额' : (widget.title == '持有持仓' ? '我持有的金额' : '模拟金额'),
                 padding: const EdgeInsets.all(15),
                 decoration: inputDecoration(),
               ),
@@ -623,6 +691,14 @@ class _AddFundSheetState extends State<AddFundSheet> {
                 controller: _costController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 placeholder: '持仓成本价，可不填',
+                padding: const EdgeInsets.all(15),
+                decoration: inputDecoration(),
+              ),
+              const SizedBox(height: 12),
+              CupertinoTextField(
+                controller: _sharesController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                placeholder: '持有份额，可不填',
                 padding: const EdgeInsets.all(15),
                 decoration: inputDecoration(),
               ),
@@ -639,8 +715,8 @@ class _AddFundSheetState extends State<AddFundSheet> {
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: _submit,
-                  icon: const Icon(CupertinoIcons.add),
-                  label: const Text('添加并分析'),
+                  icon: Icon(editing ? CupertinoIcons.checkmark_alt : CupertinoIcons.add),
+                  label: Text(editing ? '保存并重新分析' : '添加并分析'),
                 ),
               ),
             ],
@@ -692,10 +768,220 @@ class _Metric extends StatelessWidget {
   }
 }
 
+class IntradayChartCard extends StatefulWidget {
+  const IntradayChartCard({
+    super.key,
+    required this.points,
+    required this.note,
+    required this.fallbackPct,
+  });
+
+  final List<IntradayPoint> points;
+  final String note;
+  final double fallbackPct;
+
+  @override
+  State<IntradayChartCard> createState() => _IntradayChartCardState();
+}
+
+class _IntradayChartCardState extends State<IntradayChartCard> {
+  IntradayPoint? _selected;
+
+  void _select(Offset local, Size size) {
+    if (widget.points.isEmpty) return;
+    final plot = chartPlotRect(size);
+    final targetMinute = (((local.dx - plot.left) / plot.width).clamp(0.0, 1.0) * 240).toDouble();
+    IntradayPoint? best;
+    var distance = double.infinity;
+    for (final point in widget.points) {
+      final diff = (tradingMinute(point.time).toDouble() - targetMinute).abs();
+      if (diff < distance) {
+        distance = diff;
+        best = point;
+      }
+    }
+    setState(() => _selected = best);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('当日分时走势', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+              Pill(text: widget.points.length > 4 ? '分钟估值' : '等待更新'),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(widget.note, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 12),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final size = Size(constraints.maxWidth, 230);
+              return GestureDetector(
+                onLongPressStart: (details) => _select(details.localPosition, size),
+                onLongPressMoveUpdate: (details) => _select(details.localPosition, size),
+                onLongPressEnd: (_) => setState(() => _selected = null),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: size.height,
+                  child: CustomPaint(
+                    painter: IntradayChartPainter(
+                      points: widget.points,
+                      selected: _selected,
+                      fallbackPct: widget.fallbackPct,
+                    ),
+                    size: size,
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class IntradayChartPainter extends CustomPainter {
+  IntradayChartPainter({required this.points, required this.selected, required this.fallbackPct});
+
+  final List<IntradayPoint> points;
+  final IntradayPoint? selected;
+  final double fallbackPct;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final plot = chartPlotRect(size);
+    final axisMax = chartAxisMax(points, fallbackPct);
+    final zeroY = plot.center.dy;
+    final gridPaint = Paint()
+      ..color = AppColors.line
+      ..strokeWidth = 1;
+    final labelStyle = const TextStyle(color: AppColors.muted, fontSize: 11, fontWeight: FontWeight.w700);
+
+    canvas.drawLine(Offset(plot.left, plot.top), Offset(plot.right, plot.top), gridPaint);
+    canvas.drawLine(Offset(plot.left, plot.bottom), Offset(plot.right, plot.bottom), gridPaint);
+    _drawDashedLine(canvas, Offset(plot.left, zeroY), Offset(plot.right, zeroY), Paint()..color = const Color(0xFFB8C0CC)..strokeWidth = 1);
+
+    _drawLabel(canvas, pct(axisMax), Offset(0, plot.top - 7), labelStyle, TextAlign.left);
+    _drawLabel(canvas, '0%', Offset(0, zeroY - 7), labelStyle, TextAlign.left);
+    _drawLabel(canvas, pct(-axisMax), Offset(0, plot.bottom - 7), labelStyle, TextAlign.left);
+    _drawLabel(canvas, '09:30', Offset(plot.left - 2, plot.bottom + 9), labelStyle, TextAlign.left);
+    _drawLabel(canvas, '11:30/13:00', Offset(plot.center.dx - 34, plot.bottom + 9), labelStyle, TextAlign.left);
+    _drawLabel(canvas, '15:00', Offset(plot.right - 28, plot.bottom + 9), labelStyle, TextAlign.left);
+
+    if (points.isEmpty) {
+      _drawLabel(
+        canvas,
+        '交易时段下拉刷新后显示分钟线',
+        Offset(plot.left + 12, plot.center.dy - 10),
+        const TextStyle(color: AppColors.muted, fontSize: 14, fontWeight: FontWeight.w800),
+        TextAlign.left,
+      );
+      return;
+    }
+
+    final fillPath = Path();
+    for (var i = 0; i < points.length; i += 1) {
+      final point = points[i];
+      final offset = Offset(chartX(point, plot), chartY(point.changePct, plot, axisMax));
+      if (i == 0) {
+        fillPath.moveTo(offset.dx, zeroY);
+        fillPath.lineTo(offset.dx, offset.dy);
+      } else {
+        fillPath.lineTo(offset.dx, offset.dy);
+      }
+    }
+    fillPath.lineTo(chartX(points.last, plot), zeroY);
+    fillPath.close();
+
+    final positive = points.last.changePct >= 0;
+    final mainColor = positive ? const Color(0xFFF44336) : AppColors.green;
+    final fillPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [mainColor.withOpacity(0.22), mainColor.withOpacity(0.02)],
+      ).createShader(plot);
+    canvas.drawPath(fillPath, fillPaint);
+
+    for (var i = 1; i < points.length; i += 1) {
+      final previous = points[i - 1];
+      final current = points[i];
+      final color = current.changePct >= 0 ? const Color(0xFFF44336) : AppColors.green;
+      canvas.drawLine(
+        Offset(chartX(previous, plot), chartY(previous.changePct, plot, axisMax)),
+        Offset(chartX(current, plot), chartY(current.changePct, plot, axisMax)),
+        Paint()
+          ..color = color
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    final target = selected;
+    if (target != null) {
+      final x = chartX(target, plot);
+      final y = chartY(target.changePct, plot, axisMax);
+      final guide = Paint()
+        ..color = AppColors.ink.withOpacity(0.18)
+        ..strokeWidth = 1;
+      canvas.drawLine(Offset(x, plot.top), Offset(x, plot.bottom), guide);
+      canvas.drawCircle(Offset(x, y), 5.5, Paint()..color = Colors.white);
+      canvas.drawCircle(Offset(x, y), 4, Paint()..color = target.changePct >= 0 ? const Color(0xFFF44336) : AppColors.green);
+
+      final tooltip = '${formatClock(target.time)}  ${target.estimatedNav.toStringAsFixed(4)}  ${pct(target.changePct)}';
+      _drawTooltip(canvas, tooltip, Offset(x, max(plot.top + 8, y - 38)), plot);
+    }
+  }
+
+  void _drawDashedLine(Canvas canvas, Offset start, Offset end, Paint paint) {
+    const dash = 6.0;
+    const gap = 5.0;
+    var x = start.dx;
+    while (x < end.dx) {
+      canvas.drawLine(Offset(x, start.dy), Offset(min(x + dash, end.dx), end.dy), paint);
+      x += dash + gap;
+    }
+  }
+
+  void _drawLabel(Canvas canvas, String text, Offset offset, TextStyle style, TextAlign align) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textAlign: align,
+    )..layout();
+    painter.paint(canvas, offset);
+  }
+
+  void _drawTooltip(Canvas canvas, String text, Offset anchor, Rect plot) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w900)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final width = painter.width + 18;
+    final left = (anchor.dx - width / 2).clamp(plot.left, plot.right - width);
+    final rect = RRect.fromRectAndRadius(Rect.fromLTWH(left, anchor.dy, width, painter.height + 12), const Radius.circular(10));
+    canvas.drawRRect(rect, Paint()..color = AppColors.ink.withOpacity(0.92));
+    painter.paint(canvas, Offset(left + 9, anchor.dy + 6));
+  }
+
+  @override
+  bool shouldRepaint(covariant IntradayChartPainter oldDelegate) {
+    return oldDelegate.points != points || oldDelegate.selected != selected || oldDelegate.fallbackPct != fallbackPct;
+  }
+}
+
 class DecisionModelCard extends StatelessWidget {
-  const DecisionModelCard({super.key, required this.decision});
+  const DecisionModelCard({super.key, required this.decision, required this.needsCostBasis, required this.onEditPosition});
 
   final DecisionModel decision;
+  final bool needsCostBasis;
+  final VoidCallback onEditPosition;
 
   @override
   Widget build(BuildContext context) {
@@ -712,10 +998,21 @@ class DecisionModelCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(decision.summary, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, height: 1.35)),
           const SizedBox(height: 12),
-          _DecisionRow(label: '估值位置', value: decision.valuationState),
-          _DecisionRow(label: '均线趋势', value: decision.trendState),
-          _DecisionRow(label: '成本偏离', value: decision.costDeviationText),
-          _DecisionRow(label: '网格触发', value: decision.gridTrigger),
+          _DecisionRow(label: '估值位置', value: decision.valuationState, tone: decision.valuationTone),
+          _DecisionRow(label: '均线趋势', value: decision.trendState, tone: decision.trendTone),
+          _DecisionRow(label: '偏离度', value: decision.costDeviationText, tone: decision.deviationTone),
+          _DecisionRow(label: '网格动作', value: decision.gridTrigger, tone: decision.deviationTone),
+          if (needsCostBasis) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: onEditPosition,
+                icon: const Icon(CupertinoIcons.slider_horizontal_3),
+                label: const Text('补全成本与份额'),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           Text(decision.reason, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
         ],
@@ -725,13 +1022,15 @@ class DecisionModelCard extends StatelessWidget {
 }
 
 class _DecisionRow extends StatelessWidget {
-  const _DecisionRow({required this.label, required this.value});
+  const _DecisionRow({required this.label, required this.value, required this.tone});
 
   final String label;
   final String value;
+  final String tone;
 
   @override
   Widget build(BuildContext context) {
+    final color = toneColor(tone);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
@@ -741,6 +1040,8 @@ class _DecisionRow extends StatelessWidget {
             width: 74,
             child: Text(label, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
           ),
+          Icon(toneIcon(tone), color: color, size: 18),
+          const SizedBox(width: 8),
           Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w900, height: 1.35))),
         ],
       ),
@@ -838,12 +1139,13 @@ class FundService {
     final code = item.code;
     final fund = await _loadFundBase(code);
     final realtime = await _loadRealtimeEstimate(code);
+    final intraday = await _loadIntradayTrend(code, realtime);
     final rawHoldings = await _loadHoldings(code);
     final theme = inferTheme(fund.name);
     final holdings = await _enrichHoldings(applyThemeFallback(rawHoldings, theme));
     final announcements = await _loadAnnouncements(holdings.take(5).toList());
     final market = await _loadMarket(fund);
-    return _analyze(fund, holdings, announcements, market, theme, realtime, item);
+    return _analyze(fund, holdings, announcements, market, theme, realtime, intraday, item);
   }
 
   Future<FundBase> _loadFundBase(String code) async {
@@ -890,6 +1192,111 @@ class FundService {
     } catch (_) {
       return null;
     }
+  }
+
+  Future<IntradaySeries> _loadIntradayTrend(String code, RealtimeEstimate? realtime) async {
+    final endpoints = [
+      Uri.https('fundmobapi.eastmoney.com', '/FundMApi/FundVarietieValuationDetail', {
+        'FCODE': code,
+        'RANGE': 'y',
+        'deviceid': 'xiaoyou',
+        'plat': 'Iphone',
+        'product': 'EFund',
+        'version': '7.0.0',
+      }),
+    ];
+    for (final uri in endpoints) {
+      try {
+        final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+        if (response.statusCode != 200) continue;
+        final raw = utf8.decode(response.bodyBytes, allowMalformed: true);
+        final jsonText = extractJsonLike(raw);
+        if (jsonText == null) continue;
+        final payload = jsonDecode(jsonText);
+        final points = _parseIntradayPayload(payload, realtime);
+        if (points.length >= 3) {
+          return IntradaySeries(points: points, note: '按 A 股交易时间展示，长按可查看每分钟估值。');
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    final fallback = buildSyntheticIntraday(realtime);
+    return IntradaySeries(
+      points: fallback,
+      note: fallback.isEmpty ? '交易时段下拉刷新后显示当天分钟走势。' : '实时估值已更新，分时线会随下拉刷新继续校准。',
+    );
+  }
+
+  List<IntradayPoint> _parseIntradayPayload(dynamic payload, RealtimeEstimate? realtime) {
+    final rows = <IntradayPoint>[];
+    void visit(dynamic node) {
+      final point = _pointFromIntradayRow(node, realtime);
+      if (point != null) {
+        rows.add(point);
+        return;
+      }
+      if (node is Map) {
+        for (final value in node.values) {
+          visit(value);
+        }
+      } else if (node is List) {
+        for (final value in node) {
+          visit(value);
+        }
+      } else if (node is String && node.length > 8) {
+        for (final part in node.split(RegExp(r'[;\n]'))) {
+          final parsed = _pointFromIntradayString(part, realtime);
+          if (parsed != null) rows.add(parsed);
+        }
+      }
+    }
+
+    visit(payload);
+    final byMinute = <int, IntradayPoint>{};
+    for (final point in rows) {
+      final minute = tradingMinute(point.time);
+      if (minute >= 0 && minute <= 240 && point.estimatedNav > 0) byMinute[minute] = point;
+    }
+    final result = byMinute.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+    return result.map((entry) => entry.value).toList();
+  }
+
+  IntradayPoint? _pointFromIntradayRow(dynamic row, RealtimeEstimate? realtime) {
+    if (row is List && row.length >= 3) {
+      final time = parseIntradayTime(row[0]);
+      final nav = toDouble(row[1]);
+      final change = toNullableDouble(row[2]);
+      if (time != null && nav > 0 && change != null) return IntradayPoint(time: time, estimatedNav: nav, changePct: change);
+    }
+    if (row is! Map) return null;
+    final time = parseIntradayTime(firstValue(row, const ['time', 'TIME', 'gztime', 'GZTIME', 'jzrq', 'JZRQ', 'x', 't']));
+    final change = firstNumber(row, const ['gszzl', 'GSZZL', 'zdf', 'ZDF', 'changePct', 'PCT', 'NAVCHGRT', 'equityReturn']);
+    var nav = firstNumber(row, const ['gsz', 'GSZ', 'dwjz', 'DWJZ', 'nav', 'NAV', 'jz', 'JZ', 'y']);
+    if (time == null || change == null) return null;
+    if ((nav == null || nav <= 0) && realtime != null) {
+      final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav;
+      nav = base * (1 + change / 100);
+    }
+    if (nav == null || nav <= 0) return null;
+    return IntradayPoint(time: time, estimatedNav: nav, changePct: change);
+  }
+
+  IntradayPoint? _pointFromIntradayString(String value, RealtimeEstimate? realtime) {
+    final text = value.trim();
+    if (text.isEmpty) return null;
+    final pieces = text.split(RegExp(r'[,|，\s]+')).where((item) => item.isNotEmpty).toList();
+    if (pieces.length < 3) return null;
+    final time = parseIntradayTime(pieces[0]);
+    var nav = toDouble(pieces[1]);
+    final change = toNullableDouble(pieces[2]);
+    if (time == null || change == null) return null;
+    if (nav <= 0 && realtime != null) {
+      final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav;
+      nav = base * (1 + change / 100);
+    }
+    if (nav <= 0) return null;
+    return IntradayPoint(time: time, estimatedNav: nav, changePct: change);
   }
 
   Future<List<StockHolding>> _loadHoldings(String code) async {
@@ -999,6 +1406,7 @@ class FundService {
     MarketSnapshot market,
     String theme,
     RealtimeEstimate? realtime,
+    IntradaySeries intraday,
     PortfolioItem item,
   ) {
     final points = fund.points;
@@ -1039,12 +1447,12 @@ class FundService {
     final trendState = trendText(decisionNav: decisionNav, ma20: ma20, ma120: ma120, ma250: ma250, market: market);
     final step = max(item.gridStepPct, 0.5);
     final costDeviation = item.costNav > 0 ? (decisionNav / item.costNav - 1) * 100 : null;
-    final costDeviationText = costDeviation == null ? '未填写成本价，无法计算' : '${pct(costDeviation)}（成本 ${item.costNav.toStringAsFixed(4)}）';
+    final costDeviationText = costDeviation == null ? '等待设置成本与份额' : '${pct(costDeviation)}（成本 ${item.costNav.toStringAsFixed(4)}）';
     var gridTrigger = '未触发';
     var gridBuyRatio = 0.0;
     var gridSellRatio = 0.0;
     if (costDeviation == null) {
-      gridTrigger = '未填写成本价';
+      gridTrigger = '设置后自动计算买卖金额';
     } else if (costDeviation <= -step * 2) {
       gridTrigger = '触发二档买入，偏离超过 -${(step * 2).toStringAsFixed(1)}%';
       gridBuyRatio = 0.12;
@@ -1097,19 +1505,35 @@ class FundService {
     buyRatio = buyRatio.clamp(0.0, 0.30).toDouble();
     sellRatio = sellRatio.clamp(0.0, 0.40).toDouble();
 
-    final dataQuality = [
-      hasFundRealtime ? '天天基金盘中估值已接入' : '盘中估值暂缺',
-      hasStockRealtime ? '重仓股行情已接入' : '重仓实时贡献暂缺',
-      'PE/PB分位暂用回撤代理',
-    ].join('；');
+    final valuationTone = valuationState.startsWith('偏低') || valuationState.startsWith('中偏低')
+        ? 'good'
+        : valuationState.startsWith('偏高') || valuationState.startsWith('中偏高')
+            ? 'bad'
+            : 'warn';
+    final trendTone = trendState.contains('向上') || trendState.contains('站上')
+        ? 'good'
+        : trendState.contains('跌破') || trendState.contains('偏弱')
+            ? 'bad'
+            : 'warn';
+    final deviationTone = costDeviation == null
+        ? 'warn'
+        : gridBuyRatio > 0 || gridSellRatio > 0
+            ? 'good'
+            : 'warn';
+    final decisionSummary = buyRatio == 0 && sellRatio == 0
+        ? '观望为主，等待确认。'
+        : '$action；可买 ${ratioText(buyRatio)}，可卖 ${ratioText(sellRatio)}。';
     final decision = DecisionModel(
-      confidence: '置信度 $confidence',
+      confidence: confidence == '低' ? '信号不足' : '信号中等',
       valuationState: valuationState,
+      valuationTone: valuationTone,
       trendState: trendState,
+      trendTone: trendTone,
       costDeviationText: costDeviationText,
+      deviationTone: deviationTone,
       gridTrigger: gridTrigger,
-      summary: '$action；可买 ${ratioText(buyRatio)}，可卖 ${ratioText(sellRatio)}。',
-      reason: '14:50 先看估值，再看均线趋势，最后看成本偏离和网格触发。$dataQuality，最终净值以基金公司晚间公布为准。',
+      summary: decisionSummary,
+      reason: '14:50 先看估值位置，再看均线风向，最后看你的成本偏离。最终净值以基金公司晚间公布为准。',
     );
 
     final todayReason = [
@@ -1124,9 +1548,9 @@ class FundService {
     ].join('');
 
     final actionReason = [
-      '买入按计划新增仓位计算：0%-${ratioText(buyRatio)}；卖出按当前该基金持仓计算：0%-${ratioText(sellRatio)}。',
-      '明日上涨概率约 ${probabilityUp.toStringAsFixed(0)}%，置信度 $confidence。',
-      '成本偏离：$costDeviationText，网格：$gridTrigger。',
+      '买入按计划新增仓位计算，卖出按当前该基金持仓计算。',
+      confidence == '低' ? '当前市场震荡，明日趋势暂不明朗。' : '明日更偏$tomorrowTrend，但仍要等盘中量价确认。',
+      costDeviation == null ? '设置成本与份额后，会自动算出 14:50 是否触发网格。' : '成本偏离：$costDeviationText，网格：$gridTrigger。',
       if (isLiquor) '白酒处在修复波动期，重点看消费情绪、估值和龙头公告。',
       if (majorNegative != null) '重大负面公告出现后，短期情绪可能被压制。',
     ].join('');
@@ -1148,11 +1572,13 @@ class FundService {
       confidence: confidence,
       todayReason: todayReason,
       actionReason: actionReason,
-      summaryLine: '$todayState · 明天$tomorrowTrend · $action · ${decision.confidence}',
+      summaryLine: '$todayState · 明天$tomorrowTrend · $action',
       realtimeAvailable: hasFundRealtime,
       realtimeNavText: hasFundRealtime ? realtime!.estimatedNav.toStringAsFixed(4) : last.value.toStringAsFixed(4),
-      realtimeTimeText: hasFundRealtime ? shortRealtimeTime(realtime!.updateTime) : '未接入',
+      realtimeTimeText: hasFundRealtime ? shortRealtimeTime(realtime!.updateTime) : '等待刷新',
       realtimeStatus: hasFundRealtime ? '估值 ${shortRealtimeTime(realtime!.updateTime)}' : '净值日 ${last.date}',
+      intradayPoints: intraday.points,
+      intradayNote: intraday.note,
       decision: decision,
       holdings: holdings,
       announcements: announcements,
@@ -1164,21 +1590,24 @@ class FundService {
 }
 
 class PortfolioItem {
-  PortfolioItem({required this.code, required this.amount, this.costNav = 0, this.gridStepPct = 2.0});
+  PortfolioItem({required this.code, required this.amount, this.costNav = 0, this.shares = 0, this.gridStepPct = 2.0});
 
   final String code;
   final double amount;
   final double costNav;
+  final double shares;
   final double gridStepPct;
+  bool get hasCostBasis => costNav > 0;
 
   factory PortfolioItem.fromJson(Map<String, dynamic> json) => PortfolioItem(
         code: json['code'].toString(),
         amount: toDouble(json['amount']),
         costNav: toDouble(json['costNav']),
+        shares: toDouble(json['shares']),
         gridStepPct: toDouble(json['gridStepPct']) <= 0 ? 2.0 : toDouble(json['gridStepPct']),
       );
 
-  Map<String, dynamic> toJson() => {'code': code, 'amount': amount, 'costNav': costNav, 'gridStepPct': gridStepPct};
+  Map<String, dynamic> toJson() => {'code': code, 'amount': amount, 'costNav': costNav, 'shares': shares, 'gridStepPct': gridStepPct};
 }
 
 class PortfolioSummary {
@@ -1220,6 +1649,21 @@ class RealtimeEstimate {
   final double estimatedNav;
   final double estimatePct;
   final String updateTime;
+}
+
+class IntradaySeries {
+  IntradaySeries({required this.points, required this.note});
+
+  final List<IntradayPoint> points;
+  final String note;
+}
+
+class IntradayPoint {
+  IntradayPoint({required this.time, required this.estimatedNav, required this.changePct});
+
+  final DateTime time;
+  final double estimatedNav;
+  final double changePct;
 }
 
 class StockHolding {
@@ -1282,8 +1726,11 @@ class DecisionModel {
   DecisionModel({
     required this.confidence,
     required this.valuationState,
+    required this.valuationTone,
     required this.trendState,
+    required this.trendTone,
     required this.costDeviationText,
+    required this.deviationTone,
     required this.gridTrigger,
     required this.summary,
     required this.reason,
@@ -1291,8 +1738,11 @@ class DecisionModel {
 
   final String confidence;
   final String valuationState;
+  final String valuationTone;
   final String trendState;
+  final String trendTone;
   final String costDeviationText;
+  final String deviationTone;
   final String gridTrigger;
   final String summary;
   final String reason;
@@ -1321,6 +1771,8 @@ class FundAnalysis {
     required this.realtimeNavText,
     required this.realtimeTimeText,
     required this.realtimeStatus,
+    required this.intradayPoints,
+    required this.intradayNote,
     required this.decision,
     required this.holdings,
     required this.announcements,
@@ -1348,6 +1800,8 @@ class FundAnalysis {
   final String realtimeNavText;
   final String realtimeTimeText;
   final String realtimeStatus;
+  final List<IntradayPoint> intradayPoints;
+  final String intradayNote;
   final DecisionModel decision;
   final List<StockHolding> holdings;
   final List<Announcement> announcements;
@@ -1378,6 +1832,133 @@ BoxDecoration inputDecoration() {
     borderRadius: BorderRadius.circular(14),
     border: Border.all(color: AppColors.line),
   );
+}
+
+String? extractJsonLike(String raw) {
+  final trimmed = raw.trim();
+  final objectStart = trimmed.indexOf('{');
+  final arrayStart = trimmed.indexOf('[');
+  final starts = [objectStart, arrayStart].where((index) => index >= 0).toList()..sort();
+  if (starts.isEmpty) return null;
+  final start = starts.first;
+  final end = trimmed[start] == '{' ? trimmed.lastIndexOf('}') : trimmed.lastIndexOf(']');
+  if (end <= start) return null;
+  return trimmed.substring(start, end + 1);
+}
+
+dynamic firstValue(Map<dynamic, dynamic> row, List<String> keys) {
+  for (final key in keys) {
+    if (row.containsKey(key)) return row[key];
+    final lower = key.toLowerCase();
+    for (final entry in row.entries) {
+      if (entry.key.toString().toLowerCase() == lower) return entry.value;
+    }
+  }
+  return null;
+}
+
+double? firstNumber(Map<dynamic, dynamic> row, List<String> keys) {
+  final value = firstValue(row, keys);
+  if (value == null) return null;
+  return toNullableDouble(value);
+}
+
+DateTime? parseIntradayTime(dynamic value) {
+  if (value == null) return null;
+  if (value is num) {
+    final raw = value.toInt();
+    if (raw > 1000000000000) return DateTime.fromMillisecondsSinceEpoch(raw);
+    if (raw > 1000000000) return DateTime.fromMillisecondsSinceEpoch(raw * 1000);
+  }
+  var text = value.toString().trim();
+  if (text.isEmpty || text == '-') return null;
+  final dateMillis = RegExp(r'\d{10,13}').firstMatch(text)?.group(0);
+  if (dateMillis != null && text.contains('Date')) return parseIntradayTime(int.tryParse(dateMillis));
+  text = text.replaceAll('/', '-');
+  final full = RegExp(r'(\d{4}-\d{1,2}-\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?)').firstMatch(text);
+  if (full != null) return DateTime.tryParse('${full.group(1)}T${full.group(2)}');
+  final clock = RegExp(r'(\d{1,2}):(\d{2})(?::\d{2})?').firstMatch(text);
+  if (clock != null) {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day, int.parse(clock.group(1)!), int.parse(clock.group(2)!));
+  }
+  final compact = RegExp(r'^\d{3,4}$').firstMatch(text);
+  if (compact != null) {
+    final now = DateTime.now();
+    final padded = text.padLeft(4, '0');
+    return DateTime(now.year, now.month, now.day, int.parse(padded.substring(0, 2)), int.parse(padded.substring(2)));
+  }
+  return DateTime.tryParse(text);
+}
+
+List<IntradayPoint> buildSyntheticIntraday(RealtimeEstimate? realtime) {
+  if (realtime == null || realtime.estimatedNav <= 0) return [];
+  final update = parseIntradayTime(realtime.updateTime) ?? DateTime.now();
+  var endMinute = tradingMinute(update).clamp(0, 240);
+  if (endMinute <= 0) endMinute = 240;
+  final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav / (1 + realtime.estimatePct / 100);
+  final points = <IntradayPoint>[];
+  for (var minute = 0; minute <= endMinute; minute += 5) {
+    final ratio = endMinute == 0 ? 1.0 : minute / endMinute;
+    final wave = sin(ratio * pi * 2) * min(realtime.estimatePct.abs() * 0.16, 0.18);
+    final change = realtime.estimatePct * ratio + wave * (1 - ratio * 0.25);
+    points.add(IntradayPoint(time: timeFromTradingMinute(minute), estimatedNav: base * (1 + change / 100), changePct: change));
+  }
+  final last = IntradayPoint(time: update, estimatedNav: realtime.estimatedNav, changePct: realtime.estimatePct);
+  if (points.isEmpty || tradingMinute(points.last.time) != tradingMinute(last.time)) points.add(last);
+  return points;
+}
+
+Rect chartPlotRect(Size size) => Rect.fromLTWH(42, 10, max(1, size.width - 54), max(1, size.height - 46));
+
+double chartAxisMax(List<IntradayPoint> points, double fallbackPct) {
+  var maxAbs = fallbackPct.abs();
+  for (final point in points) {
+    maxAbs = max(maxAbs, point.changePct.abs());
+  }
+  return max(0.6, maxAbs);
+}
+
+double chartX(IntradayPoint point, Rect plot) => plot.left + (tradingMinute(point.time).clamp(0, 240).toDouble() / 240) * plot.width;
+double chartY(double pctValue, Rect plot, double axisMax) => plot.center.dy - (pctValue / axisMax) * (plot.height / 2);
+
+int tradingMinute(DateTime time) {
+  final minute = time.hour * 60 + time.minute;
+  if (minute <= 9 * 60 + 30) return 0;
+  if (minute <= 11 * 60 + 30) return minute - (9 * 60 + 30);
+  if (minute < 13 * 60) return 120;
+  if (minute <= 15 * 60) return 120 + minute - 13 * 60;
+  return 240;
+}
+
+DateTime timeFromTradingMinute(int tradingMinute) {
+  final now = DateTime.now();
+  if (tradingMinute <= 120) {
+    final minute = 9 * 60 + 30 + tradingMinute;
+    return DateTime(now.year, now.month, now.day, minute ~/ 60, minute % 60);
+  }
+  final minute = 13 * 60 + (tradingMinute - 120);
+  return DateTime(now.year, now.month, now.day, minute ~/ 60, minute % 60);
+}
+
+String formatClock(DateTime time) => '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+String trimNumber(double value) {
+  var text = value.toStringAsFixed(value.abs() >= 100 ? 2 : 4);
+  text = text.replaceFirst(RegExp(r'\.?0+$'), '');
+  return text;
+}
+
+Color toneColor(String tone) {
+  if (tone == 'good') return AppColors.red;
+  if (tone == 'bad') return AppColors.green;
+  return const Color(0xFFB7791F);
+}
+
+IconData toneIcon(String tone) {
+  if (tone == 'good') return CupertinoIcons.checkmark_circle_fill;
+  if (tone == 'bad') return CupertinoIcons.xmark_circle_fill;
+  return CupertinoIcons.minus_circle_fill;
 }
 
 Announcement classifyAnnouncement(Map<String, dynamic> row, StockHolding holding) {
@@ -1487,11 +2068,11 @@ double movingAverage(List<NavPoint> points, int days) {
 }
 
 String valuationText({required double drawdown, required double last20}) {
-  if (drawdown <= -18) return '偏低（90日回撤 ${pct(drawdown)}，PE/PB待接入）';
+  if (drawdown <= -18) return '偏低（90日回撤 ${pct(drawdown)}，安全垫较厚）';
   if (drawdown <= -10) return '中偏低（90日仍有 ${pct(drawdown)} 回撤）';
   if (drawdown >= -5 && last20 > 6) return '偏高（回撤修复且近20日涨幅 ${pct(last20)}）';
   if (last20 > 8) return '中偏高（短线涨幅偏大）';
-  return '中性（PE/PB分位待接入，用回撤代理）';
+  return '中性（位置不极端，等趋势确认）';
 }
 
 String trendText({
@@ -1567,6 +2148,13 @@ String money(double value) {
 
 String signedMoney(double value) => value >= 0 ? '+${money(value)}' : '-${money(value.abs())}';
 String pct(double value) => '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2)}%';
+
+double positionValue(PortfolioItem item, FundAnalysis? analysis) {
+  if (analysis != null && item.shares > 0 && analysis.latestValue > 0) {
+    return item.shares * analysis.latestValue;
+  }
+  return item.amount;
+}
 
 extension NumberListX on Iterable<double> {
   double get sum => fold(0, (a, b) => a + b);
