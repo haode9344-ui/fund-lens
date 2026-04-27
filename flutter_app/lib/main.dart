@@ -946,17 +946,17 @@ class DecisionModelCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(child: Text('14:50 决策模型', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+              const Expanded(child: Text('14:45 推演 · 14:50 决策', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
               Pill(text: decision.confidence),
             ],
           ),
           const SizedBox(height: 10),
           Text(decision.summary, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, height: 1.35)),
           const SizedBox(height: 12),
-          _DecisionRow(label: '估值位置', value: decision.valuationState, tone: decision.valuationTone),
-          _DecisionRow(label: '均线趋势', value: decision.trendState, tone: decision.trendTone),
-          _DecisionRow(label: '持仓金额', value: decision.costDeviationText, tone: decision.deviationTone),
-          _DecisionRow(label: '金额规则', value: decision.gridTrigger, tone: decision.deviationTone),
+          _DecisionRow(label: '板块资金', value: decision.valuationState, tone: decision.valuationTone),
+          _DecisionRow(label: '重仓尾盘', value: decision.trendState, tone: decision.trendTone),
+          _DecisionRow(label: '量价配合', value: decision.costDeviationText, tone: decision.deviationTone),
+          _DecisionRow(label: '持仓动作', value: decision.gridTrigger, tone: decision.deviationTone),
           const SizedBox(height: 10),
           Text(decision.reason, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
         ],
@@ -1039,6 +1039,7 @@ class StockHoldingRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final quote = item.changePct == null ? '暂无行情' : pct(item.changePct!);
+    final flow = item.mainFlow == null ? '资金等待' : flowDirectionText(item.mainFlow, item.mainFlowPct);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -1050,6 +1051,8 @@ class StockHoldingRow extends StatelessWidget {
                 Text(item.name, style: const TextStyle(fontWeight: FontWeight.w900)),
                 const SizedBox(height: 3),
                 Text('${item.code} · ${item.industry}', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+                const SizedBox(height: 3),
+                Text(flow, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w700)),
               ],
             ),
           ),
@@ -1088,7 +1091,7 @@ class FundService {
     final theme = inferTheme(fund.name);
     final holdings = await _enrichHoldings(applyThemeFallback(rawHoldings, theme));
     final announcements = await _loadAnnouncements(holdings.take(5).toList());
-    final market = await _loadMarket(fund);
+    final market = await _loadMarket(fund, theme, holdings);
     return _analyze(fund, holdings, announcements, market, theme, realtime, intraday, item);
   }
 
@@ -1274,7 +1277,7 @@ class FundService {
   Future<List<StockHolding>> _enrichHoldings(List<StockHolding> holdings) async {
     if (holdings.isEmpty) return holdings;
     final secids = holdings.map((item) => '${marketFromCode(item.code)}.${item.code}').join(',');
-    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=$secids&fields=f2,f3,f12,f14,f62,f100,f184');
+    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=$secids&fields=f2,f3,f6,f8,f12,f14,f62,f100,f184');
     try {
       final response = await _client.get(uri).timeout(const Duration(seconds: 8));
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
@@ -1284,11 +1287,21 @@ class FundService {
       return holdings.map((holding) {
         final quote = quoteMap[holding.code];
         final change = quote == null ? null : toNullableDouble(quote['f3']);
+        final price = quote == null ? null : toNullableDouble(quote['f2']);
+        final amount = quote == null ? null : toNullableDouble(quote['f6']);
+        final turnover = quote == null ? null : toNullableDouble(quote['f8']);
+        final mainFlow = quote == null ? null : toNullableDouble(quote['f62']);
+        final mainFlowPct = quote == null ? null : toNullableDouble(quote['f184']);
         final quoteIndustry = quote == null ? '' : (quote['f100'] ?? '').toString();
         final industry = quoteIndustry.isNotEmpty ? quoteIndustry : holding.industry;
         return holding.copyWith(
           industry: normalizeIndustry(industry, fallback: holding.industry),
+          price: price,
           changePct: change,
+          amount: amount,
+          turnover: turnover,
+          mainFlow: mainFlow,
+          mainFlowPct: mainFlowPct,
           contributionPct: change == null ? null : holding.holdingPct * change / 100,
         );
       }).toList();
@@ -1297,21 +1310,63 @@ class FundService {
     }
   }
 
-  Future<MarketSnapshot> _loadMarket(FundBase fund) async {
+  Future<MarketSnapshot> _loadMarket(FundBase fund, String theme, List<StockHolding> holdings) async {
     final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001,0.399006,1.000300&fields=f2,f3,f12,f14');
+    var label = '市场震荡';
+    var avg = 0.0;
     try {
       final response = await _client.get(uri).timeout(const Duration(seconds: 8));
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final data = payload['data'] as Map<String, dynamic>?;
       final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
       final changes = rows.map((row) => toDouble(row['f3'])).toList();
-      final avg = changes.isEmpty ? 0.0 : changes.reduce((a, b) => a + b) / changes.length;
-      return MarketSnapshot(label: avg > 0.4 ? '市场偏强' : avg < -0.4 ? '市场偏弱' : '市场震荡', averageChange: avg);
+      avg = changes.isEmpty ? 0.0 : changes.reduce((a, b) => a + b) / changes.length;
+      label = avg > 0.4 ? '市场偏强' : avg < -0.4 ? '市场偏弱' : '市场震荡';
     } catch (_) {
       final returns = recentReturns(fund.points, 10);
-      final avg = returns.isEmpty ? 0.0 : returns.reduce((a, b) => a + b) / returns.length;
-      return MarketSnapshot(label: avg > 0 ? '基金风格偏强' : '基金风格震荡', averageChange: avg);
+      avg = returns.isEmpty ? 0.0 : returns.reduce((a, b) => a + b) / returns.length;
+      label = avg > 0 ? '基金风格偏强' : '基金风格震荡';
     }
+    final realtimeBoard = await _loadThemeBoard(theme);
+    final board = realtimeBoard ?? boardSignalFromHoldings(theme, holdings);
+    return MarketSnapshot(label: label, averageChange: avg, board: board);
+  }
+
+  Future<BoardSignal?> _loadThemeBoard(String theme) async {
+    final keywords = themeKeywords(theme);
+    if (keywords.isEmpty) return null;
+    final candidates = <Map<String, dynamic>>[];
+    for (final boardType in const ['2', '3']) {
+      final uri = Uri.parse(
+        'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1000&po=1&np=1&fltt=2&fid=f3&fs=m:90+t:$boardType&fields=f12,f14,f3,f62,f184,f6,f2,f8',
+      );
+      try {
+        final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+        if (response.statusCode != 200) continue;
+        final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+        final data = payload['data'] as Map<String, dynamic>?;
+        final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>();
+        candidates.addAll(rows.where((row) => themeBoardScore((row['f14'] ?? '').toString(), keywords) > 0));
+      } catch (_) {
+        continue;
+      }
+    }
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) {
+      final byName = themeBoardScore((b['f14'] ?? '').toString(), keywords).compareTo(themeBoardScore((a['f14'] ?? '').toString(), keywords));
+      if (byName != 0) return byName;
+      return toDouble(b['f6']).compareTo(toDouble(a['f6']));
+    });
+    final best = candidates.first;
+    return BoardSignal(
+      name: (best['f14'] ?? '$theme板块').toString(),
+      source: '板块实时行情',
+      changePct: toDouble(best['f3']),
+      mainFlow: toNullableDouble(best['f62']),
+      mainFlowPct: toNullableDouble(best['f184']),
+      amount: toNullableDouble(best['f6']),
+      turnover: toNullableDouble(best['f8']),
+    );
   }
 
   Future<List<Announcement>> _loadAnnouncements(List<StockHolding> holdings) async {
@@ -1356,9 +1411,7 @@ class FundService {
     final points = fund.points;
     final last = points.last;
     final returns = dailyReturns(points);
-    final last5 = returns.takeLast(5).sum;
     final last20 = returns.takeLast(20).sum;
-    final volatility = std(returns.takeLast(30));
     final drawdown = maxDrawdown(points.takeLast(90)) * 100;
     final contribution = holdings.where((item) => item.contributionPct != null).map((item) => item.contributionPct!).sum;
     final hasStockRealtime = holdings.any((item) => item.changePct != null);
@@ -1366,29 +1419,40 @@ class FundService {
     final latestReturn = last.equityReturn ?? (returns.isEmpty ? 0 : returns.last);
     final todayPct = hasFundRealtime ? realtime!.estimatePct : (hasStockRealtime ? contribution : latestReturn);
     final decisionNav = hasFundRealtime ? realtime!.estimatedNav : last.value;
-    final ma20 = movingAverage(points, 20);
-    final ma120 = movingAverage(points, 120);
-    final ma250 = movingAverage(points, 250);
     final majorNegative = announcements.where((item) => item.sentiment == '负面' && item.severity >= 80).firstOrNull;
     final isLiquor = theme == '白酒';
-    var expected = 0.42 * returns.takeLast(5).averageOrZero +
-        0.22 * returns.takeLast(10).averageOrZero +
-        0.18 * market.averageChange +
-        0.18 * todayPct;
-    if (ma20 > 0 && decisionNav < ma20) expected -= 0.18;
-    if (majorNegative != null) expected -= 0.35;
-    final probabilityUp = (100 / (1 + exp(-(expected / max(volatility, 0.35))))).clamp(5.0, 95.0).toDouble();
-    final confidence = hasFundRealtime && hasStockRealtime && volatility < 1.15 && majorNegative == null ? '中' : '低';
+    final sectorState = sectorStateText(theme, market.board, market);
+    final sectorScoreValue = sectorScore(market.board, market);
+    final coreState = coreHoldingStateText(holdings);
+    final coreScoreValue = coreHoldingScore(holdings);
+    final tailDelta = intradayDeltaSinceClock(intraday.points, 14, 30);
+    final tailState = tailStateText(tailDelta);
+    final tailScoreValue = tailScore(tailDelta);
+    final volumeState = volumeStateText(market.board, todayPct);
+    final volumeScoreValue = volumeScore(market.board, todayPct);
+    final liveDataCount = [
+      market.board != null,
+      hasStockRealtime,
+      hasFundRealtime,
+      intraday.points.length >= minimumMinutePointCount(),
+    ].where((ready) => ready).length;
+    var realtimeScore = 0.34 * sectorScoreValue + 0.28 * coreScoreValue + 0.20 * tailScoreValue + 0.18 * volumeScoreValue;
+    if (majorNegative != null) realtimeScore -= 0.45;
+    if (market.averageChange < -0.6) realtimeScore -= 0.12;
+    realtimeScore = realtimeScore.clamp(-1.0, 1.0).toDouble();
+    final confidence = liveDataCount >= 3 && realtimeScore.abs() >= 0.18 && majorNegative == null ? '中' : '低';
+    final probabilityUp = (50 + realtimeScore * 35).clamp(10.0, 90.0).toDouble();
     final todayState = todayPct > 0.35 ? '偏涨' : todayPct < -0.35 ? '偏跌' : '震荡';
-    final tomorrowTrend = probabilityUp > 60 && confidence != '低'
-        ? '偏强'
-        : probabilityUp >= 53
-            ? '震荡，略偏强'
-            : probabilityUp < 42
-                ? '偏弱'
-                : '震荡';
-    final valuationState = valuationText(drawdown: drawdown, last20: last20);
-    final trendState = trendText(decisionNav: decisionNav, ma20: ma20, ma120: ma120, ma250: ma250, market: market);
+    final tomorrowTrend = realtimeScore >= 0.52
+        ? '震荡走强'
+        : realtimeScore >= 0.18
+            ? '偏震荡，略偏强'
+            : realtimeScore <= -0.52
+                ? '偏弱回调'
+                : realtimeScore <= -0.18
+                    ? '偏震荡，略偏弱'
+                    : '震荡观察';
+    final valuationBackground = valuationText(drawdown: drawdown, last20: last20);
     final amountLevel = item.amount >= 30000
         ? '仓位偏重'
         : item.amount >= 10000
@@ -1397,72 +1461,54 @@ class FundService {
 
     var buyRatio = 0.0;
     var sellRatio = 0.0;
-    var action = '不动，等确认';
-    if (valuationState.startsWith('偏低') && trendState.contains('向上')) {
-      action = '小额分批买';
-      buyRatio = 0.08;
-    } else if (valuationState.startsWith('偏低')) {
-      action = '小额定投';
-      buyRatio = 0.05;
-    } else if (valuationState.startsWith('偏高')) {
-      action = '不急买，仓位重可减';
-      sellRatio = 0.10;
-    } else if (probabilityUp >= 57 && majorNegative == null) {
-      action = confidence == '低' ? '观望，不追涨' : '小额试探';
-      buyRatio = confidence == '低' ? 0.03 : 0.06;
-    } else if (probabilityUp < 43 || majorNegative != null) {
-      action = '不急买，仓位重可减';
-      sellRatio = 0.10;
+    var action = '不动，等14:45确认';
+    if (majorNegative != null || realtimeScore <= -0.45) {
+      action = amountLevel == '仓位偏重' ? '减仓避险' : '观望，不加仓';
+      sellRatio = item.amount >= 10000 ? 0.08 : 0.05;
+    } else if (realtimeScore >= 0.55) {
+      action = '小额加仓';
+      buyRatio = confidence == '中' ? 0.08 : 0.04;
+    } else if (realtimeScore >= 0.25) {
+      action = '轻仓可试探';
+      buyRatio = confidence == '中' ? 0.05 : 0.03;
+    } else if (realtimeScore <= -0.20) {
+      action = '观望，防回落';
+      if (amountLevel == '仓位偏重') sellRatio = 0.05;
     }
-    if (majorNegative != null) {
-      action = '不急买，仓位重可减';
+    if (liveDataCount < 2) {
       buyRatio = 0.0;
-      sellRatio = max(sellRatio, 0.10);
+      sellRatio = 0.0;
+      action = '不动，等实时数据';
     }
-    if (isLiquor && confidence == '低') {
-      buyRatio = min(buyRatio, 0.05);
-      if (buyRatio == 0) action = '观望，不追涨';
-    }
-    if (amountLevel == '仓位偏重' && (todayPct < -0.8 || majorNegative != null || valuationState.startsWith('偏高'))) {
-      sellRatio = max(sellRatio, 0.10);
+    if (amountLevel == '仓位偏重' && realtimeScore < 0.15) {
+      sellRatio = max(sellRatio, 0.05);
       buyRatio = min(buyRatio, 0.03);
       if (sellRatio > 0) action = '仓位重可小幅减';
     }
-    buyRatio = buyRatio.clamp(0.0, 0.30).toDouble();
-    sellRatio = sellRatio.clamp(0.0, 0.40).toDouble();
+    if (isLiquor && confidence == '低') buyRatio = min(buyRatio, 0.03);
+    buyRatio = buyRatio.clamp(0.0, 0.20).toDouble();
+    sellRatio = sellRatio.clamp(0.0, 0.30).toDouble();
 
-    final valuationTone = valuationState.startsWith('偏低') || valuationState.startsWith('中偏低')
-        ? 'good'
-        : valuationState.startsWith('偏高') || valuationState.startsWith('中偏高')
-            ? 'bad'
-            : 'warn';
-    final trendTone = trendState.contains('向上') || trendState.contains('站上')
-        ? 'good'
-        : trendState.contains('跌破') || trendState.contains('偏弱')
-            ? 'bad'
-            : 'warn';
-    final positionTone = sellRatio > 0 && amountLevel == '仓位偏重'
-        ? 'bad'
-        : buyRatio > 0 && amountLevel == '轻仓'
-            ? 'good'
-            : 'warn';
+    final sectorTone = toneFromScore(sectorScoreValue);
+    final coreTone = toneFromScore(coreScoreValue + tailScoreValue * 0.35);
+    final volumeTone = toneFromScore(volumeScoreValue);
     final decisionSummary = buyRatio == 0 && sellRatio == 0
-        ? '观望为主，等待确认。'
-        : '$action；可买 ${ratioText(buyRatio)}，可卖 ${ratioText(sellRatio)}。';
+        ? '$action：今日没有买卖金额。'
+        : '$action：买 ${ratioText(buyRatio)}，卖 ${ratioText(sellRatio)}。';
     final amountRule = buyRatio == 0 && sellRatio == 0
-        ? '未触发买卖动作，持有金额只作为换算基数'
-        : '按持有金额计算：买入 ${money(item.amount * buyRatio)}，卖出 ${money(item.amount * sellRatio)}';
+        ? '$amountLevel ${money(item.amount)}，今日无买卖触发。'
+        : '$amountLevel ${money(item.amount)}，买入 ${money(item.amount * buyRatio)}，卖出 ${money(item.amount * sellRatio)}';
     final decision = DecisionModel(
-      confidence: confidence == '低' ? '信号不足' : '信号中等',
-      valuationState: valuationState,
-      valuationTone: valuationTone,
-      trendState: trendState,
-      trendTone: trendTone,
-      costDeviationText: '$amountLevel：${money(item.amount)}',
-      deviationTone: positionTone,
+      confidence: confidence == '低' ? '低置信度' : '中等置信度',
+      valuationState: sectorState,
+      valuationTone: sectorTone,
+      trendState: '$coreState；$tailState',
+      trendTone: coreTone,
+      costDeviationText: volumeState,
+      deviationTone: volumeTone,
       gridTrigger: amountRule,
       summary: decisionSummary,
-      reason: '14:50 先看估值位置，再看均线风向和当天事件，最后按你填的持有金额换算买卖金额。最终净值以基金公司晚间公布为准。',
+      reason: '14:30-14:40 抓板块资金和重仓股，14:40-14:45 汇总尾盘动能与抛压，14:45 刷新结论，14:50 前只按你的持有金额换算买卖金额。',
     );
 
     final todayReason = [
@@ -1470,25 +1516,27 @@ class FundService {
       hasFundRealtime
           ? '天天基金盘中估值 ${pct(todayPct)}，估算净值 ${realtime!.estimatedNav.toStringAsFixed(4)}，更新时间 ${realtime!.updateTime}。'
           : '盘中估值暂缺，用最新净值和重仓行情近似。',
-      '市场状态：${market.label}，主要指数均值 ${pct(market.averageChange)}。',
-      hasStockRealtime ? '重仓股估算贡献 ${pct(contribution)}。' : '重仓贡献不可计算。',
-      '近5日 ${pct(last5)}，90日回撤 ${pct(drawdown)}。',
+      '板块：$sectorState。',
+      '重仓：$coreState。',
+      '尾盘：$tailState。',
+      '量价：$volumeState。',
+      '市场背景：${market.label}，主要指数均值 ${pct(market.averageChange)}。',
       if (majorNegative != null) '${majorNegative.stockName} 有重大负面公告：${majorNegative.title}。',
     ].join('');
 
     final actionReason = [
-      '买入和卖出都按你填的持有金额 ${money(item.amount)} 计算。',
-      confidence == '低' ? '当前市场震荡，明日趋势暂不明朗。' : '明日更偏$tomorrowTrend，但仍要等盘中量价确认。',
+      '买入和卖出都按你填的持有金额 ${money(item.amount)} 计算，不需要成本价和份额。',
+      confidence == '低' ? '关键实时信号没有完全共振，明日按$tomorrowTrend处理。' : '实时资金面更偏$tomorrowTrend，但仍要看明天开盘承接。',
       if (isLiquor) '白酒处在修复波动期，重点看消费情绪、估值和龙头公告。',
       if (majorNegative != null) '重大负面公告出现后，短期情绪可能被压制。',
     ].join('');
 
     final buyReason = buyRatio > 0
-        ? '可买 ${ratioText(buyRatio)}，约 ${money(item.amount * buyRatio)}。原因：$valuationState；$trendState；今日${todayState}，但按小比例执行，避免追高。'
-        : '暂不买。原因：$valuationState；$trendState；今日${todayState}，还没有出现足够强的加仓信号。';
+        ? '$action。监测到$sectorState；$coreState；$tailState。明天更像$tomorrowTrend，所以只按持有金额的小比例执行：${ratioText(buyRatio)}，约 ${money(item.amount * buyRatio)}，避免单日追高。'
+        : '暂不买。$sectorState；$coreState；$volumeState。现在没有看到板块资金、核心重仓和尾盘同时走强，用持有金额计算本次新增为0。';
     final sellReason = sellRatio > 0
-        ? '可卖 ${ratioText(sellRatio)}，约 ${money(item.amount * sellRatio)}。原因：${majorNegative != null ? '出现重大负面公告；' : ''}${amountLevel == '仓位偏重' ? '当前持仓金额偏重；' : ''}$trendState，先用小比例降风险。'
-        : '暂不卖。原因：没有明显破位或连续过热信号，若你本来仓位不重，短线波动不适合直接清仓。';
+        ? '建议小幅卖出 ${ratioText(sellRatio)}，约 ${money(item.amount * sellRatio)}。原因：${majorNegative != null ? '出现重大负面公告；' : ''}$sectorState；$tailState；$volumeState。先降一小部分风险，不做一次性清仓。'
+        : '暂不卖。$sectorState；$coreState。当前没有看到持续净流出、尾盘跳水或重大负面共振，若持有金额不重，短线波动不适合直接卖出。';
 
     return FundAnalysis(
       code: fund.code,
@@ -1520,7 +1568,7 @@ class FundService {
       holdings: holdings,
       announcements: announcements,
       liquorSpecial: isLiquor
-          ? '估值位置：$valuationState；龙头业绩：${majorNegative == null ? '关注茅台、五粮液、泸州老窖经营数据' : '五粮液管理层公告偏负面'}；消费情绪：${last20 > 0 ? '中性修复' : '偏弱'}；节假日效应：${holidayEffect()}；机构拥挤度：${volatility > 1.4 ? '中高' : '中'}。'
+          ? '估值位置：$valuationBackground；龙头业绩：${majorNegative == null ? '关注茅台、五粮液、泸州老窖经营数据' : '五粮液管理层公告偏负面'}；消费情绪：${last20 > 0 ? '中性修复' : '偏弱'}；节假日效应：${holidayEffect()}；机构拥挤度：${std(returns.takeLast(30)) > 1.4 ? '中高' : '中'}。'
           : null,
     );
   }
@@ -1602,7 +1650,12 @@ class StockHolding {
     required this.name,
     required this.industry,
     required this.holdingPct,
+    this.price,
     this.changePct,
+    this.amount,
+    this.turnover,
+    this.mainFlow,
+    this.mainFlowPct,
     this.contributionPct,
   });
 
@@ -1610,16 +1663,35 @@ class StockHolding {
   final String name;
   final String industry;
   final double holdingPct;
+  final double? price;
   final double? changePct;
+  final double? amount;
+  final double? turnover;
+  final double? mainFlow;
+  final double? mainFlowPct;
   final double? contributionPct;
 
-  StockHolding copyWith({String? industry, double? changePct, double? contributionPct}) {
+  StockHolding copyWith({
+    String? industry,
+    double? price,
+    double? changePct,
+    double? amount,
+    double? turnover,
+    double? mainFlow,
+    double? mainFlowPct,
+    double? contributionPct,
+  }) {
     return StockHolding(
       code: code,
       name: name,
       industry: industry ?? this.industry,
       holdingPct: holdingPct,
+      price: price ?? this.price,
       changePct: changePct ?? this.changePct,
+      amount: amount ?? this.amount,
+      turnover: turnover ?? this.turnover,
+      mainFlow: mainFlow ?? this.mainFlow,
+      mainFlowPct: mainFlowPct ?? this.mainFlowPct,
       contributionPct: contributionPct ?? this.contributionPct,
     );
   }
@@ -1645,11 +1717,32 @@ class Announcement {
   final int rank;
 }
 
+class BoardSignal {
+  BoardSignal({
+    required this.name,
+    required this.source,
+    required this.changePct,
+    this.mainFlow,
+    this.mainFlowPct,
+    this.amount,
+    this.turnover,
+  });
+
+  final String name;
+  final String source;
+  final double changePct;
+  final double? mainFlow;
+  final double? mainFlowPct;
+  final double? amount;
+  final double? turnover;
+}
+
 class MarketSnapshot {
-  MarketSnapshot({required this.label, required this.averageChange});
+  MarketSnapshot({required this.label, required this.averageChange, this.board});
 
   final String label;
   final double averageChange;
+  final BoardSignal? board;
 }
 
 class DecisionModel {
@@ -1927,6 +2020,179 @@ Announcement classifyAnnouncement(Map<String, dynamic> row, StockHolding holding
   return Announcement(title: title, stockName: holding.name, sentiment: '中性', category: '普通公告', severity: 45, rank: 6, reason: '相关公告，等待行情验证。');
 }
 
+BoardSignal? boardSignalFromHoldings(String theme, List<StockHolding> holdings) {
+  final quoted = holdings.where((item) => item.changePct != null).toList();
+  if (quoted.isEmpty) return null;
+  final totalWeight = quoted.map((item) => item.holdingPct).sum;
+  final weightedChange = totalWeight <= 0
+      ? quoted.map((item) => item.changePct!).averageOrZero
+      : quoted.map((item) => item.changePct! * item.holdingPct).sum / totalWeight;
+  final flow = weightedHoldingFlow(holdings);
+  final amountRows = holdings.where((item) => item.amount != null).toList();
+  final mappedAmount = amountRows.isEmpty ? null : amountRows.map((item) => item.amount! * item.holdingPct / 100).sum;
+  return BoardSignal(
+    name: theme.isEmpty ? '重仓映射' : '$theme重仓映射',
+    source: '重仓股实时映射',
+    changePct: weightedChange,
+    mainFlow: flow,
+    mainFlowPct: averageHoldingFlowPct(holdings),
+    amount: mappedAmount,
+  );
+}
+
+List<String> themeKeywords(String theme) {
+  if (theme.contains('电池')) return const ['动力电池', '锂电池', '刀片电池', '电池化学品', '电池', '储能'];
+  if (theme.contains('新能源')) return const ['新能源车', '电池', '储能', '光伏设备', '光伏'];
+  if (theme.contains('白酒')) return const ['白酒', '酿酒'];
+  if (theme.contains('医药')) return const ['医药', '医疗', '生物医药'];
+  if (theme.contains('半导体')) return const ['半导体', '芯片', '半导体材料', '半导体设备'];
+  if (theme.contains('军工')) return const ['军工', '航天', '航空'];
+  return const [];
+}
+
+int themeBoardScore(String name, List<String> keywords) {
+  var score = 0;
+  for (final keyword in keywords) {
+    if (name == keyword) score = max(score, 120 + keyword.length);
+    if (name.contains(keyword)) score = max(score, 70 + keyword.length);
+  }
+  return score;
+}
+
+String sectorStateText(String theme, BoardSignal? board, MarketSnapshot market) {
+  final label = board?.name ?? (theme.isEmpty ? '对应板块' : '$theme板块');
+  if (board == null) return '$label资金等待交易时段刷新，大盘${market.label} ${pct(market.averageChange)}';
+  return '$label ${pct(board.changePct)}，${flowDirectionText(board.mainFlow, board.mainFlowPct)}';
+}
+
+double sectorScore(BoardSignal? board, MarketSnapshot market) {
+  if (board == null) return (market.averageChange / 2).clamp(-0.3, 0.3).toDouble();
+  final pricePart = (board.changePct / 3.5).clamp(-0.45, 0.45).toDouble();
+  final flowPart = flowStrengthScore(board.mainFlow, board.mainFlowPct) * 0.65;
+  return (pricePart + flowPart).clamp(-1.0, 1.0).toDouble();
+}
+
+String coreHoldingStateText(List<StockHolding> holdings) {
+  final quoted = holdings.where((item) => item.changePct != null).toList();
+  if (quoted.isEmpty) return '核心重仓股等待实时行情，暂不做强判断';
+  final top = List<StockHolding>.from(quoted)..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
+  final leaders = top.take(3).map((item) => '${item.name}${pct(item.changePct!)}').join('、');
+  final weightedChange = weightedHoldingChange(holdings);
+  final flow = weightedHoldingFlow(holdings);
+  final flowText = flowDirectionText(flow, averageHoldingFlowPct(holdings));
+  if (weightedChange > 0.6 && (flow ?? 0) > 0) return '核心重仓股 $leaders，$flowText，形成支撑';
+  if (weightedChange < -0.6 && (flow ?? 0) < 0) return '核心重仓股 $leaders，$flowText，抛压偏重';
+  return '核心重仓股 $leaders，$flowText，方向仍在拉扯';
+}
+
+double coreHoldingScore(List<StockHolding> holdings) {
+  final changePart = (weightedHoldingChange(holdings) / 3).clamp(-0.45, 0.45).toDouble();
+  final flowPart = flowStrengthScore(weightedHoldingFlow(holdings), averageHoldingFlowPct(holdings)) * 0.55;
+  return (changePart + flowPart).clamp(-1.0, 1.0).toDouble();
+}
+
+String volumeStateText(BoardSignal? board, double todayPct) {
+  if (board == null) return '量价等待板块行情刷新，先看分时尾盘确认';
+  final amountText = board.amount == null ? '' : '，成交额 ${cnAmount(board.amount!)}';
+  final flow = board.mainFlow ?? 0;
+  if (todayPct > 0.2 && flow > 0) return '放量上涨倾向：上涨同时有资金承接$amountText';
+  if (todayPct > 0.2 && flow < 0) return '缩量/背离上涨：净值上涨但资金流出$amountText';
+  if (todayPct < -0.2 && flow < 0) return '放量下跌倾向：下跌叠加资金流出$amountText';
+  if (todayPct < -0.2 && flow > 0) return '下跌有承接：净值回落但资金回流$amountText';
+  return '量价中性：价格波动不大，资金强弱还不明显$amountText';
+}
+
+double volumeScore(BoardSignal? board, double todayPct) {
+  if (board == null) return 0;
+  final flow = flowStrengthScore(board.mainFlow, board.mainFlowPct);
+  if (todayPct > 0.2 && flow > 0) return min(0.9, 0.25 + flow * 0.75);
+  if (todayPct > 0.2 && flow < 0) return max(-0.8, flow * 0.8);
+  if (todayPct < -0.2 && flow < 0) return max(-0.9, -0.25 + flow * 0.75);
+  if (todayPct < -0.2 && flow > 0) return min(0.65, flow * 0.6);
+  return flow * 0.45;
+}
+
+double? intradayDeltaSinceClock(List<IntradayPoint> points, int hour, int minute) {
+  if (points.length < 2) return null;
+  final now = DateTime.now();
+  final target = tradingMinute(DateTime(now.year, now.month, now.day, hour, minute));
+  final lastMinute = tradingMinute(points.last.time);
+  final startMinute = lastMinute >= target ? target : max(0, lastMinute - 30);
+  IntradayPoint? base;
+  for (final point in points) {
+    if (tradingMinute(point.time) <= startMinute) base = point;
+  }
+  base ??= points.first;
+  return points.last.changePct - base.changePct;
+}
+
+String tailStateText(double? delta) {
+  if (delta == null) return '尾盘信号等待分钟估值更新';
+  if (delta > 0.28) return '14:30附近以来估值抬升 ${pct(delta)}，有尾盘抢筹迹象';
+  if (delta < -0.28) return '14:30附近以来估值回落 ${pct(delta)}，尾盘抛压偏重';
+  return '14:30附近以来变化 ${pct(delta)}，尾盘暂未给出强方向';
+}
+
+double tailScore(double? delta) {
+  if (delta == null) return 0;
+  return (delta / 0.9).clamp(-1.0, 1.0).toDouble();
+}
+
+String flowDirectionText(double? flow, double? flowPct) {
+  if (flow == null) return '资金方向还在等待确认';
+  final direction = flow >= 0 ? '主力净流入' : '主力净流出';
+  final absFlow = flow.abs();
+  final strength = absFlow >= 1000000000
+      ? '大幅'
+      : absFlow >= 300000000
+          ? '明显'
+          : absFlow >= 50000000
+              ? '小幅'
+              : '轻微';
+  final pctText = flowPct == null ? '' : '，资金强度 ${pct(flowPct)}';
+  return '$strength$direction ${cnAmount(absFlow)}$pctText';
+}
+
+double flowStrengthScore(double? flow, double? flowPct) {
+  if (flow == null) return 0;
+  final absFlow = flow.abs();
+  var score = absFlow >= 1000000000
+      ? 1.0
+      : absFlow >= 300000000
+          ? 0.72
+          : absFlow >= 50000000
+              ? 0.42
+              : 0.18;
+  if (flowPct != null) score = max(score, (flowPct.abs() / 6).clamp(0.0, 1.0).toDouble());
+  return flow >= 0 ? score : -score;
+}
+
+double weightedHoldingChange(List<StockHolding> holdings) {
+  final quoted = holdings.where((item) => item.changePct != null).toList();
+  if (quoted.isEmpty) return 0;
+  final totalWeight = quoted.map((item) => item.holdingPct).sum;
+  if (totalWeight <= 0) return quoted.map((item) => item.changePct!).averageOrZero;
+  return quoted.map((item) => item.changePct! * item.holdingPct).sum / totalWeight;
+}
+
+double? weightedHoldingFlow(List<StockHolding> holdings) {
+  final rows = holdings.where((item) => item.mainFlow != null).toList();
+  if (rows.isEmpty) return null;
+  return rows.map((item) => item.mainFlow! * item.holdingPct / 100).sum;
+}
+
+double? averageHoldingFlowPct(List<StockHolding> holdings) {
+  final rows = holdings.where((item) => item.mainFlowPct != null).toList();
+  if (rows.isEmpty) return null;
+  return rows.map((item) => item.mainFlowPct!).averageOrZero;
+}
+
+String toneFromScore(double score) {
+  if (score > 0.18) return 'good';
+  if (score < -0.18) return 'bad';
+  return 'warn';
+}
+
 List<StockHolding> applyThemeFallback(List<StockHolding> holdings, String theme) {
   if (theme.isEmpty) return holdings;
   return holdings.map((item) {
@@ -1942,7 +2208,8 @@ String inferTheme(String name) {
   if (RegExp(r'白酒|酒').hasMatch(name)) return '白酒';
   if (RegExp(r'医药|医疗|生物').hasMatch(name)) return '医药';
   if (RegExp(r'半导体|芯片').hasMatch(name)) return '半导体';
-  if (RegExp(r'新能源|电池|光伏|电力设备').hasMatch(name)) return '新能源';
+  if (RegExp(r'电池|锂|储能').hasMatch(name)) return '电池';
+  if (RegExp(r'新能源|光伏|电力设备').hasMatch(name)) return '新能源';
   if (RegExp(r'军工').hasMatch(name)) return '军工';
   return '';
 }
@@ -2079,6 +2346,13 @@ String money(double value) {
 
 String signedMoney(double value) => value >= 0 ? '+${money(value)}' : '-${money(value.abs())}';
 String pct(double value) => '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2)}%';
+
+String cnAmount(double value) {
+  final absValue = value.abs();
+  if (absValue >= 100000000) return '${(absValue / 100000000).toStringAsFixed(absValue >= 1000000000 ? 1 : 2)}亿';
+  if (absValue >= 10000) return '${(absValue / 10000).toStringAsFixed(absValue >= 1000000 ? 1 : 2)}万';
+  return '${absValue.toStringAsFixed(0)}元';
+}
 
 double positionValue(PortfolioItem item) {
   return item.amount;
