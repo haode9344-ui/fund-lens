@@ -57,13 +57,27 @@ jobs:
       - name: Build iOS without codesign
         run: |
           set +e
-          flutter build ios --release --no-codesign 2>&1 | tee build-ios.log
+          flutter build ios --release --no-codesign --config-only 2>&1 | tee build-ios-config.log
+          config_status=${PIPESTATUS[0]}
+          if [ "$config_status" -ne 0 ]; then
+            summary=$(tail -n 80 build-ios-config.log | tr '\n' ' ' | cut -c1-3500 | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+            echo "::error title=Flutter iOS config failed::$summary"
+            exit "$config_status"
+          fi
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/xcode \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build 2>&1 | tee build-ios.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            if [ -d build/ios/iphoneos/Runner.app ]; then
-              echo "::warning title=Unsigned iOS app produced::Flutter returned a signing error after Xcode produced Runner.app; continuing to package the unsigned IPA."
-              exit 0
-            fi
             echo "---- Last build lines ----"
             tail -n 120 build-ios.log
             summary=$(tail -n 80 build-ios.log | tr '\n' ' ' | cut -c1-3500 | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
@@ -78,7 +92,14 @@ jobs:
         run: |
           rm -rf build/ipa
           mkdir -p build/ipa/Payload
-          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/Xiaoyou.app
+          APP_PATH=$(find build -type d -name Runner.app | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error title=Runner.app not found::xcodebuild finished but no Runner.app was found under build/."
+            find build -maxdepth 6 -type d | sort
+            exit 1
+          fi
+          echo "Packing $APP_PATH"
+          cp -R "$APP_PATH" build/ipa/Payload/Xiaoyou.app
           cd build/ipa
           /usr/bin/zip -qry xiaoyou-unsigned.ipa Payload
           ls -lh xiaoyou-unsigned.ipa
