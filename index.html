@@ -2,9 +2,11 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="refresh" content="0; url=static/index.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Fund Lens</title>
+    <script>
+      location.replace("static/index.html" + location.search + location.hash);
+    </script>
   </head>
   <body>
     <p><a href="static/index.html">打开 Fund Lens</a></p>

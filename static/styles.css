@@ -148,6 +148,25 @@ h2 {
   padding: 0 18px;
 }
 
+.backend-status {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  min-height: 42px;
+  padding: 11px 13px;
+}
+
+.backend-status.ready {
+  color: var(--green);
+}
+
+.backend-status.warn {
+  color: var(--amber);
+}
+
 .hero-result {
   min-height: 240px;
   overflow: hidden;

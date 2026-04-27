@@ -21,9 +21,74 @@ const chart = document.querySelector("#chart");
 const latestDate = document.querySelector("#latestDate");
 const notes = document.querySelector("#notes");
 const sourceBadge = document.querySelector("#sourceBadge");
+const backendStatus = document.querySelector("#backendStatus");
 
 const pct = (number) => `${Number(number) > 0 ? "+" : ""}${Number(number).toFixed(2)}%`;
 const jsonpPrefix = "fundLensJsonp";
+const pageParams = new URLSearchParams(location.search);
+const defaultCloudApi = "https://fund-lens.onrender.com";
+let backendBase = "";
+let backendBlockedReason = "";
+
+function normalizeBackendBase(value) {
+  const raw = (value || "").trim().replace(/\/+$/, "");
+  if (!raw || raw === "none" || raw === "static") return "";
+  if (!/^https?:\/\//i.test(raw)) return "";
+  if (location.protocol === "https:" && raw.startsWith("http://")) {
+    backendBlockedReason = "HTTPS 页面不能连接 HTTP 后端，请使用 HTTPS 云后端。";
+    return "";
+  }
+  return raw;
+}
+
+function configuredBackendBase() {
+  const queryApi = pageParams.get("api");
+  if (queryApi === "clear") {
+    localStorage.removeItem("fundLensApiBase");
+    return "";
+  }
+  if (queryApi) {
+    const normalized = normalizeBackendBase(queryApi);
+    if (normalized) localStorage.setItem("fundLensApiBase", normalized);
+    return normalized;
+  }
+  const saved = normalizeBackendBase(localStorage.getItem("fundLensApiBase") || "");
+  if (saved) return saved;
+  return location.hostname.endsWith("github.io") ? normalizeBackendBase(defaultCloudApi) : "";
+}
+
+backendBase = configuredBackendBase();
+
+function setBackendStatus(message, state = "") {
+  if (!backendStatus) return;
+  backendStatus.textContent = message;
+  backendStatus.className = `backend-status ${state}`.trim();
+}
+
+function backendUrl(path) {
+  return backendBase ? `${backendBase}${path}` : path;
+}
+
+async function fetchJson(url, timeout = 18000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { signal: controller.signal, mode: "cors" });
+    return response;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+if (backendBlockedReason) {
+  setBackendStatus(backendBlockedReason, "warn");
+} else if (backendBase) {
+  setBackendStatus(`后端：${backendBase}`);
+} else if (location.hostname.endsWith("github.io")) {
+  setBackendStatus("云后端未配置，当前使用纯前端模式。");
+} else {
+  setBackendStatus("本机后端：当前电脑服务");
+}
 
 function setLoading() {
   summary.innerHTML = `<div class="muted-state"><p>正在抓取公开净值、重仓持仓和行情数据...</p></div>`;
@@ -585,26 +650,33 @@ async function loadStaticFund(code) {
 }
 
 async function loadFund(code) {
-  const forceStatic = new URLSearchParams(location.search).has("static");
-  if (!forceStatic && !location.hostname.endsWith("github.io")) {
+  const forceStatic = pageParams.has("static");
+  const canUseBackend = !forceStatic && (!location.hostname.endsWith("github.io") || backendBase);
+  if (canUseBackend) {
     try {
-      const response = await fetch(`/api/fund/${code}`);
+      setBackendStatus(backendBase ? `正在连接后端：${backendBase}` : "正在连接本机后端...");
+      const response = await fetchJson(backendUrl(`/api/fund/${code}`), 22000);
       if (response.ok) {
         const payload = await response.json();
-        if (payload.ok) return payload.data;
+        if (payload.ok) {
+          setBackendStatus(backendBase ? `后端已连接：${backendBase}` : "本机后端已连接", "ready");
+          return payload.data;
+        }
       }
-    } catch {
-      // Fall through to the GitHub Pages compatible loader.
+    } catch (error) {
+      const target = backendBase ? "后端" : "本机后端";
+      setBackendStatus(`${target}暂时没连上，已切到纯前端行情模式。`, "warn");
     }
   }
+  if (forceStatic) setBackendStatus("纯前端模式，不连接后端。", "warn");
   return loadStaticFund(code);
 }
 
 async function loadMonitor(code) {
-  const forceStatic = new URLSearchParams(location.search).has("static");
-  if (forceStatic || location.hostname.endsWith("github.io")) return null;
+  const forceStatic = pageParams.has("static");
+  if (forceStatic || (location.hostname.endsWith("github.io") && !backendBase)) return null;
   try {
-    const response = await fetch(`/api/monitor/${code}`);
+    const response = await fetchJson(backendUrl(`/api/monitor/${code}`), 65000);
     if (!response.ok) return null;
     const payload = await response.json();
     return payload.ok ? payload.data : null;
@@ -616,8 +688,10 @@ async function loadMonitor(code) {
 function renderMonitor(data) {
   if (!data) {
     monitorPanel.hidden = false;
-    monitorBadge.textContent = "本地服务未启用";
-    monitorNote.textContent = "GitHub Pages 版不能后台监控。电脑部署版会抓取新浪7x24快讯和东方财富公告，并按重仓股/行业做预警。";
+    monitorBadge.textContent = backendBase ? "后端未连接" : "后端未启用";
+    monitorNote.textContent = backendBase
+      ? "已配置后端，但这次没有拿到监控数据。可能是云服务休眠、刚启动较慢，或后端地址未部署成功。"
+      : "GitHub Pages 纯前端不能后台监控。部署 HTTPS 云后端后，可抓取新浪7x24快讯和东方财富公告，并按重仓股/行业做预警。";
     alertList.innerHTML = "";
     return;
   }

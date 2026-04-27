@@ -23,6 +23,11 @@ STATIC = ROOT / "static"
 FUND_CODE_RE = re.compile(r"^\d{6}$")
 POSITIVE_WORDS = ["利好", "上涨", "增长", "增持", "回购", "中标", "突破", "创新高", "扩产", "超预期", "盈利", "涨价"]
 NEGATIVE_WORDS = ["利空", "下跌", "亏损", "减持", "处罚", "调查", "退坡", "暴跌", "违约", "低于预期", "风险", "召回"]
+DEFAULT_ALLOWED_ORIGINS = {
+    "https://haode9344-ui.github.io",
+    "http://127.0.0.1:8765",
+    "http://localhost:8765",
+}
 
 
 def fetch_text(url: str, timeout: int = 12) -> str:
@@ -836,8 +841,21 @@ def load_fund(code: str) -> dict[str, Any]:
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.end_headers()
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/health":
+            self.send_json_response(
+                lambda: {
+                    "service": "fund-lens",
+                    "status": "ok",
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+            return
         if self.path.startswith("/api/fund/"):
             code = self.path.rsplit("/", 1)[-1].split("?", 1)[0]
             self.send_json_response(lambda: load_fund(code))
@@ -863,6 +881,24 @@ class Handler(SimpleHTTPRequestHandler):
         if (STATIC / path.lstrip("/")).exists():
             return str(STATIC / path.lstrip("/"))
         return str(STATIC / "index.html")
+
+    def end_headers(self) -> None:
+        origin = self.headers.get("Origin", "")
+        allowed = set(DEFAULT_ALLOWED_ORIGINS)
+        allowed.update(
+            item.strip()
+            for item in os.environ.get("FUND_LENS_ALLOWED_ORIGINS", "").split(",")
+            if item.strip()
+        )
+        if "*" in allowed:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        elif origin in allowed:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        super().end_headers()
 
     def send_json_response(self, producer) -> None:
         try:
