@@ -12,65 +12,12 @@ ICONSET = ROOT / "ios" / "Runner" / "Assets.xcassets" / "AppIcon.appiconset"
 ICON_ASSETS = ROOT / "tool" / "icon_assets"
 
 
-def font_icon_bytes(size: int) -> bytes | None:
-    prebuilt = ICON_ASSETS / f"icon-{size}.png"
-    if prebuilt.exists():
-        return prebuilt.read_bytes()
-
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except Exception:
-        return None
-
-    font_paths = [
-        Path("/System/Library/Fonts/Supplemental/Songti.ttc"),
-        Path("/System/Library/Fonts/Supplemental/Kaiti.ttc"),
-        Path("/System/Library/Fonts/PingFang.ttc"),
-        Path("/System/Library/Fonts/STHeiti Light.ttc"),
-        Path("C:/Windows/Fonts/NotoSerifSC-VF.ttf"),
-        Path("C:/Windows/Fonts/NotoSansSC-VF.ttf"),
-        Path("C:/Windows/Fonts/msyhbd.ttc"),
-        Path("C:/Windows/Fonts/simhei.ttf"),
-    ]
-    font_path = next((path for path in font_paths if path.exists()), None)
-    if font_path is None:
-        return None
-
-    scale = 4
-    canvas_size = size * scale
-    image = Image.new("RGB", (canvas_size, canvas_size), (255, 255, 255))
-    draw = ImageDraw.Draw(image)
-    text = "小又"
-    target_width = canvas_size * 0.84
-    target_height = canvas_size * 0.58
-    font_size = int(canvas_size * 0.70)
-    while font_size > 12:
-        font = ImageFont.truetype(str(font_path), font_size)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        width = bbox[2] - bbox[0]
-        height = bbox[3] - bbox[1]
-        if width <= target_width and height <= target_height:
-            break
-        font_size -= max(1, int(canvas_size * 0.01))
-
-    font = ImageFont.truetype(str(font_path), font_size)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    width = bbox[2] - bbox[0]
-    height = bbox[3] - bbox[1]
-    x = (canvas_size - width) / 2 - bbox[0]
-    y = (canvas_size - height) / 2 - bbox[1] - canvas_size * 0.015
-    draw.text((x, y), text, fill=(0, 0, 0), font=font)
-    image = image.resize((size, size), Image.Resampling.LANCZOS)
-
-    import io
-
-    output = io.BytesIO()
-    image.save(output, format="PNG", optimize=True)
-    return output.getvalue()
+def prebuilt_icon_bytes(size: int) -> bytes | None:
+    return None
 
 
 def png_bytes(size: int) -> bytes:
-    rendered = font_icon_bytes(size)
+    rendered = prebuilt_icon_bytes(size)
     if rendered is not None:
       return rendered
 
@@ -87,15 +34,14 @@ def png_bytes(size: int) -> bytes:
       cy = ay + t * vy
       return math.sqrt((px - cx) ** 2 + (py - cy) ** 2)
 
-    strokes = [
-      # 小
-      (0.30, 0.20, 0.30, 0.76, 0.026),
-      (0.22, 0.49, 0.12, 0.66, 0.024),
-      (0.38, 0.49, 0.48, 0.66, 0.024),
-      # 又
-      (0.56, 0.28, 0.86, 0.28, 0.026),
-      (0.60, 0.34, 0.83, 0.72, 0.028),
-      (0.84, 0.34, 0.55, 0.75, 0.028),
+    red = (244, 67, 54)
+    shadow = (255, 219, 215)
+    points = [
+      (0.17, 0.70),
+      (0.33, 0.54),
+      (0.47, 0.61),
+      (0.64, 0.39),
+      (0.82, 0.26),
     ]
     rows = []
     for y in range(size):
@@ -103,15 +49,30 @@ def png_bytes(size: int) -> bytes:
       for x in range(size):
         nx = x / max(size - 1, 1)
         ny = y / max(size - 1, 1)
+        r, g, b = 255, 255, 255
+
         ink = 0.0
-        for ax, ay, bx, by, width in strokes:
+        glow = 0.0
+        for index in range(len(points) - 1):
+          ax, ay = points[index]
+          bx, by = points[index + 1]
           distance = distance_to_segment(nx, ny, ax, ay, bx, by)
-          if distance < width:
+          if distance < 0.020:
             ink = max(ink, 1.0)
-          elif distance < width + 0.010:
-            ink = max(ink, 1 - (distance - width) / 0.010)
-        value = int(255 * (1 - ink))
-        r = g = b = value
+          elif distance < 0.032:
+            ink = max(ink, 1 - (distance - 0.020) / 0.012)
+          elif distance < 0.050:
+            glow = max(glow, 1 - (distance - 0.032) / 0.018)
+
+        if glow > 0:
+          r = int(255 * (1 - glow) + shadow[0] * glow)
+          g = int(255 * (1 - glow) + shadow[1] * glow)
+          b = int(255 * (1 - glow) + shadow[2] * glow)
+        if ink > 0:
+          r = int(r * (1 - ink) + red[0] * ink)
+          g = int(g * (1 - ink) + red[1] * ink)
+          b = int(b * (1 - ink) + red[2] * ink)
+
         row.extend((r, g, b))
       rows.append(bytes([0]) + bytes(row))
 
