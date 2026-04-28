@@ -1380,8 +1380,8 @@ class FundService {
     final intraday = await _loadIntradayTrend(code, fund, theme, realtime, fund.points.last.value);
     final holdingCode = holdingsLookupCode(fund);
     final rawHoldings = await _loadHoldings(holdingCode);
-    final holdingSourceText = holdingCode == code ? '' : '该基金为联接基金，此处展示底层目标 ETF $holdingCode 的核心重仓股穿透数据。';
-    final holdings = await _enrichHoldings(applyThemeFallback(rawHoldings, theme));
+    final holdingSourceText = holdingCode == code ? '' : '该基金为联接基金，此处展示底层目标 ETF $holdingCode 最近披露的核心重仓股。';
+    final holdings = await _enrichHoldings(rawHoldings);
     final tailSignalsFuture = _loadStockTailSignals(holdings);
     final announcementsFuture = _loadAnnouncements(holdings.take(5).toList());
     final marketBaseFuture = _loadMarket(fund, theme, holdings);
@@ -1473,34 +1473,10 @@ class FundService {
         continue;
       }
     }
-    final proxy = intradayProxyForFund(fund, theme);
-    if (proxy != null) {
-      final proxySeries = await _loadProxyIntradayTrend(proxy, realtime?.estimatePct ?? fund.points.last.equityReturn ?? 0, fallbackNav);
-      if (proxySeries.points.isNotEmpty) return proxySeries;
-    }
     return IntradaySeries(
       points: const [],
-      note: '暂时还没拿到足够的分钟级走势，稍后下拉刷新会继续补全。',
+      note: '当前没有拿到这只基金的真实分钟级估值数据，所以先不展示分时线。',
     );
-  }
-
-  Future<IntradaySeries> _loadProxyIntradayTrend(IntradayProxy proxy, double anchorPct, double fallbackNav) async {
-    final uri = Uri.parse(
-      'https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=${proxy.secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&iscca=0&ndays=1&rt=${DateTime.now().millisecondsSinceEpoch}',
-    );
-    try {
-      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
-      if (response.statusCode != 200) return IntradaySeries(points: const [], note: '');
-      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-      final points = proxyIntradayPointsFromPayload(payload, anchorPct, fallbackNav);
-      if (points.length < 20) return IntradaySeries(points: const [], note: '');
-      return IntradaySeries(
-        points: points,
-        note: '场外基金没有真实分钟成交价，已使用${proxy.name}分时走势，并把收盘端点锚定到基金当日估值/实际涨跌。',
-      );
-    } catch (_) {
-      return IntradaySeries(points: const [], note: '');
-    }
   }
 
   List<IntradayPoint> _parseIntradayPayload(dynamic payload, RealtimeEstimate? realtime, double fallbackNav) {
@@ -1811,7 +1787,10 @@ class FundService {
     final marketRank = boardCode.isEmpty ? null : rankedRows.indexWhere((row) => (row['f12'] ?? '').toString() == boardCode) + 1;
     final marketCount = rankedRows.length;
     final rpsPercentile = marketRank == null || marketCount <= 1 ? null : (100 - ((marketRank - 1) * 100 / (marketCount - 1))).clamp(0, 100).toDouble();
-    final trendStats = boardCode.isEmpty ? null : await _loadBoardTrendStats('90.$boardCode');
+    final trendFuture = boardCode.isEmpty ? Future<BoardTrendStats?>.value(null) : _loadBoardTrendStats('90.$boardCode');
+    final dailyFuture = boardCode.isEmpty ? Future<BoardTrendStats?>.value(null) : _loadBoardDailyStats('90.$boardCode');
+    final trendStats = await trendFuture;
+    final dailyStats = await dailyFuture;
     return BoardSignal(
       name: (best['f14'] ?? '$theme板块').toString(),
       source: '板块实时行情',
@@ -1829,6 +1808,8 @@ class FundService {
       marketRank: marketRank == 0 ? null : marketRank,
       marketCount: marketCount == 0 ? null : marketCount,
       rpsPercentile: rpsPercentile,
+      recent3ChangePct: dailyStats?.recent3ChangePct,
+      recent5ChangePct: dailyStats?.recent5ChangePct,
     );
   }
 
@@ -1841,6 +1822,20 @@ class FundService {
       if (response.statusCode != 200) return null;
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       return boardTrendStatsFromPayload(payload);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<BoardTrendStats?> _loadBoardDailyStats(String secid) async {
+    final uri = Uri.parse(
+      'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=$secid&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1&lmt=12&end=20500101&iscca=1&rt=${DateTime.now().millisecondsSinceEpoch}',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return null;
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      return boardDailyStatsFromPayload(payload);
     } catch (_) {
       return null;
     }
@@ -1967,6 +1962,58 @@ class FundService {
   }
 
   Future<TextFactorSignal> _loadDragonTigerFactorForHolding(StockHolding holding) async {
+    final institution = await _loadInstitutionTradeFactorForHolding(holding);
+    if (institution.hitCount > 0) return institution;
+    return _loadBillboardFactorForHolding(holding);
+  }
+
+  Future<TextFactorSignal> _loadInstitutionTradeFactorForHolding(StockHolding holding) async {
+    final uri = Uri.parse(
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_ORGANIZATION_TRADE_DETAILS&columns=ALL&filter=(SECURITY_CODE%3D%22${holding.code}%22)&pageNumber=1&pageSize=3&sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return TextFactorSignal(text: '', score: 0);
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final rows = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+      final row = rows.firstWhereOrNull((item) {
+        final tradeDate = parseDateFromText((item['TRADE_DATE'] ?? '').toString());
+        return tradeDate != null && DateTime.now().difference(tradeDate).inDays <= 120;
+      });
+      if (row == null) return TextFactorSignal(text: '', score: 0);
+      final buyTimes = max(toInt(row['BUY_TIMES']), toInt(row['BUY_COUNT']));
+      final sellTimes = max(toInt(row['SELL_TIMES']), toInt(row['SELL_COUNT']));
+      final netAmt = toNullableDouble(row['NET_BUY_AMT']) ?? 0;
+      final d1 = toNullableDouble(row['D1_CLOSE_ADJCHRATE']) ?? 0;
+      if (buyTimes + sellTimes <= 0 && netAmt.abs() < 50000000) {
+        return TextFactorSignal(text: '', score: 0);
+      }
+      final date = parseDateFromText((row['TRADE_DATE'] ?? '').toString());
+      final dateLabel = date == null ? '最近一次' : shortDateText(date);
+      final seatLabel = '$dateLabel机构席位上榜时，买方机构 $buyTimes 家、卖方机构 $sellTimes 家';
+      if (netAmt >= 50000000 || buyTimes >= sellTimes + 2) {
+        final momentum = d1 >= 1.0 ? '，历史上次日也偏向继续走强' : '';
+        return TextFactorSignal(
+          text: '${holding.name}$seatLabel，净买入 ${cnAmount(netAmt.abs())}，说明机构回补意愿还在$momentum。',
+          score: 1,
+          hitCount: 1,
+        );
+      }
+      if (netAmt <= -50000000 || sellTimes >= buyTimes + 2) {
+        final pressure = d1 <= -1.0 ? '，历史上次日承压也更明显' : '';
+        return TextFactorSignal(
+          text: '${holding.name}$seatLabel，但净卖出 ${cnAmount(netAmt.abs())}，说明席位端仍偏撤退$pressure。',
+          score: -1,
+          hitCount: 1,
+        );
+      }
+      return TextFactorSignal(text: '', score: 0);
+    } catch (_) {
+      return TextFactorSignal(text: '', score: 0);
+    }
+  }
+
+  Future<TextFactorSignal> _loadBillboardFactorForHolding(StockHolding holding) async {
     final uri = Uri.parse(
       'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=ALL&filter=(SECURITY_CODE%3D%22${holding.code}%22)&pageNumber=1&pageSize=1&sortTypes=-1&sortColumns=TRADE_DATE&source=WEB&client=WEB',
     );
@@ -2060,18 +2107,20 @@ class FundService {
     if (rows.isEmpty) {
       return TextFactorSignal(text: '融资盘暂时没有看到新的极端升温信号。', score: 0, hitCount: 0);
     }
+    final hotNames = rows.where((item) => item.score < 0).map((item) => item.text).where((item) => item.isNotEmpty).take(2).join('、');
+    final coolNames = rows.where((item) => item.score > 0).map((item) => item.text).where((item) => item.isNotEmpty).take(2).join('、');
     final hotCount = rows.where((item) => item.score < 0).length;
     final coolCount = rows.where((item) => item.score > 0).length;
     if (hotCount >= 2) {
       return TextFactorSignal(
-        text: '融资余额最近抬得太快，追高资金偏热，一旦冲高失败更容易出现踩踏。',
+        text: '${hotNames.isEmpty ? '几只核心重仓股' : hotNames}的融资余额最近抬得太快，追高杠杆偏热，一旦冲高失败更容易出现踩踏。',
         score: -1,
         hitCount: 1,
       );
     }
     if (coolCount >= 2) {
       return TextFactorSignal(
-        text: '融资盘没有继续升温，杠杆追涨压力反而在降下来。',
+        text: '${coolNames.isEmpty ? '核心重仓股' : coolNames}的融资盘没有继续升温，杠杆追涨压力反而在降下来。',
         score: 1,
         hitCount: 1,
       );
@@ -2085,25 +2134,34 @@ class FundService {
 
   Future<TextFactorSignal> _loadMarginFactorForHolding(StockHolding holding) async {
     final uri = Uri.parse(
-      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_GGMX&columns=ALL&filter=(SCODE%3D%22${holding.code}%22)&pageNumber=1&pageSize=1&source=WEB&client=WEB',
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_GGMX&columns=ALL&filter=(SCODE%3D%22${holding.code}%22)&pageNumber=1&pageSize=5&sortColumns=DATE&sortTypes=-1&source=WEB&client=WEB',
     );
     try {
       final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return TextFactorSignal(text: '', score: 0);
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-      final data = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
-      final row = data.firstOrNull;
-      if (row == null) return TextFactorSignal(text: '', score: 0);
-      final finGrowth = toNullableDouble(row['FIN_BALANCE_GR']) ?? 0;
-      final rzjme5d = toNullableDouble(row['RZJME5D']) ?? 0;
-      final changePct = toNullableDouble(row['ZDF']) ?? 0;
-      if (finGrowth >= 3 || (rzjme5d > 0 && changePct.abs() < 1.0)) {
+      final rows = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+      if (rows.isEmpty) return TextFactorSignal(text: '', score: 0);
+      final sample = rows.take(3).toList();
+      final latest = sample.first;
+      final finGrowth = toNullableDouble(latest['FIN_BALANCE_GR']) ?? 0;
+      final rzjme5d = toNullableDouble(latest['RZJME5D']) ?? 0;
+      final changePct = toNullableDouble(latest['ZDF']) ?? 0;
+      final hotDays = sample.where((row) => (toNullableDouble(row['FIN_BALANCE_GR']) ?? 0) >= 1.2).length;
+      final coolDays = sample.where((row) => (toNullableDouble(row['FIN_BALANCE_GR']) ?? 0) <= -0.8).length;
+      final sidewaysDays = sample.where((row) => (toNullableDouble(row['ZDF']) ?? 0).abs() <= 1.0).length;
+      final leverageBuild = (finGrowth >= 2.0 && rzjme5d > 0) || (hotDays >= 2 && sidewaysDays >= 1);
+      final leverageCool = (finGrowth <= -1.0 && rzjme5d < 0) || coolDays >= 2;
+      if (leverageBuild) {
         return TextFactorSignal(text: holding.name, score: -1, hitCount: 1);
       }
-      if (finGrowth <= -3 || rzjme5d < 0) {
+      if (leverageCool) {
         return TextFactorSignal(text: holding.name, score: 1, hitCount: 1);
       }
-      return TextFactorSignal(text: holding.name, score: 0, hitCount: 1);
+      if (rzjme5d > 0 && changePct > 0 && changePct < 1.5) {
+        return TextFactorSignal(text: holding.name, score: -1, hitCount: 1);
+      }
+      return TextFactorSignal(text: '', score: 0, hitCount: 0);
     } catch (_) {
       return TextFactorSignal(text: '', score: 0);
     }
@@ -2295,6 +2353,7 @@ class FundService {
             ? '中等仓位'
             : '轻仓';
     final atr14 = resonance.atr14;
+    final rpsPercentile = market.board?.rpsPercentile;
     final buyCap = atr14 >= 2.6
         ? 0.05
         : atr14 >= 1.8
@@ -2310,20 +2369,37 @@ class FundService {
         : atr14 <= 1.2
             ? '这只基金最近波动温和，可以继续按计划分批。'
             : '这只基金波动中等，继续按小步分批处理更稳。';
+    var strongBuyTrigger = 5;
+    var probeBuyTrigger = 2;
+    var watchTrigger = -2;
+    var reduceTrigger = -5;
+    if (rpsPercentile != null && rpsPercentile >= 90) {
+      strongBuyTrigger -= 1;
+      probeBuyTrigger -= 1;
+    } else if (rpsPercentile != null && rpsPercentile < 50) {
+      watchTrigger += 1;
+      reduceTrigger += 1;
+    }
+    if (atr14 >= 2.6) {
+      strongBuyTrigger += 1;
+      probeBuyTrigger += 1;
+    } else if (atr14 <= 1.2) {
+      strongBuyTrigger -= 1;
+    }
 
     var buyRatio = 0.0;
     var sellRatio = 0.0;
     var action = shouldLockTomorrowPrediction(DateTime.now()) ? '不动，等确认' : '等待14:45确认';
-    if (totalScore <= -5 || duration.tone == 'bad' && (bias20 > 5 || majorNegative != null || resonance.score < 0)) {
+    if (totalScore <= reduceTrigger || duration.tone == 'bad' && (bias20 > 5 || majorNegative != null || resonance.score < 0)) {
       action = amountLevel == '仓位偏重' ? '减仓锁定' : '观望，不追高';
       sellRatio = item.amount >= 10000 ? 0.10 : 0.06;
-    } else if (totalScore >= 5 && duration.tone != 'bad' && resonance.score >= 0) {
+    } else if (totalScore >= strongBuyTrigger && duration.tone != 'bad' && resonance.score >= 0) {
       action = '14:50分批买入';
       buyRatio = confidence.startsWith('中') ? 0.10 : 0.06;
-    } else if (totalScore <= -2) {
+    } else if (totalScore <= watchTrigger) {
       action = '观望，防回落';
       if (amountLevel == '仓位偏重') sellRatio = 0.05;
-    } else if (totalScore >= 2 && duration.tone == 'good' && smartMoney.score >= 0) {
+    } else if (totalScore >= probeBuyTrigger && duration.tone == 'good' && smartMoney.score >= 0) {
       action = '轻仓可试探';
       buyRatio = confidence.startsWith('中') ? 0.04 : 0.02;
     }
@@ -2336,7 +2412,7 @@ class FundService {
       buyRatio = 0.0;
       sellRatio = 0.0;
       tomorrowTrend = '多空分歧大，方向不明';
-      action = '风险高，先观望';
+      action = '风险不可控，今日观望';
     }
     if (amountLevel == '仓位偏重' && totalScore < 0) {
       sellRatio = max(sellRatio, 0.05);
@@ -2396,7 +2472,7 @@ class FundService {
     );
 
     final todayReason =
-        '${todayTone.reason}${useOfficialValue ? ' 晚上已切换为实际净值 ${last.value.toStringAsFixed(4)}。' : hasFundRealtime ? ' 当前盘中估值 ${pct(todayPct)}，更新时间 ${realtime!.updateTime}。' : ' 当前盘中估值暂缺，用净值与重仓映射近似。'}';
+        '${todayTone.reason}${useOfficialValue ? ' 晚上已切换为实际净值 ${last.value.toStringAsFixed(4)}。' : hasFundRealtime ? ' 当前盘中估值 ${pct(todayPct)}，更新时间 ${realtime!.updateTime}。' : ' 当前盘中估值暂缺，所以今天只按已经拿到的真实净值、持仓和公告来判断。'}';
     final actionReason = confidence == '极低'
         ? '今天的资金面、量能和大盘方向互相打架，多空都没形成压倒性优势。这个时候最怕的不是错过，而是被来回甩，所以先观望，等信号重新站到一边再说。'
         : joinSentences([
@@ -2676,13 +2752,6 @@ class IntradaySeries {
   final String note;
 }
 
-class IntradayProxy {
-  const IntradayProxy({required this.secid, required this.name});
-
-  final String secid;
-  final String name;
-}
-
 class IntradayPoint {
   IntradayPoint({required this.time, required this.estimatedNav, required this.changePct});
 
@@ -2733,6 +2802,8 @@ class BoardTrendStats {
     this.first15VolumeRatio,
     this.tail20ChangePct,
     this.volumeRatio1440,
+    this.recent3ChangePct,
+    this.recent5ChangePct,
   });
 
   final double? openGapPct;
@@ -2740,6 +2811,8 @@ class BoardTrendStats {
   final double? first15VolumeRatio;
   final double? tail20ChangePct;
   final double? volumeRatio1440;
+  final double? recent3ChangePct;
+  final double? recent5ChangePct;
 }
 
 class ExternalQuote {
@@ -2955,6 +3028,8 @@ class BoardSignal {
     this.marketRank,
     this.marketCount,
     this.rpsPercentile,
+    this.recent3ChangePct,
+    this.recent5ChangePct,
   });
 
   final String name;
@@ -2973,6 +3048,8 @@ class BoardSignal {
   final int? marketRank;
   final int? marketCount;
   final double? rpsPercentile;
+  final double? recent3ChangePct;
+  final double? recent5ChangePct;
 }
 
 class MarketSnapshot {
@@ -3542,6 +3619,13 @@ double? firstNumber(Map<dynamic, dynamic> row, List<String> keys) {
   return toNullableDouble(value);
 }
 
+int toInt(dynamic value) {
+  if (value == null) return 0;
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse(value.toString()) ?? 0;
+}
+
 double navFromChange(double change, RealtimeEstimate? realtime, double fallbackNav) {
   final base = realtime == null
       ? fallbackNav
@@ -3692,36 +3776,30 @@ BoardTrendStats? boardTrendStatsFromPayload(Map<String, dynamic> payload) {
   );
 }
 
-List<IntradayPoint> proxyIntradayPointsFromPayload(Map<String, dynamic> payload, double anchorPct, double fallbackNav) {
+BoardTrendStats? boardDailyStatsFromPayload(Map<String, dynamic> payload) {
   final data = payload['data'] as Map<String, dynamic>?;
-  final prePrice = toDouble(data?['prePrice']);
-  if (prePrice <= 0) return const [];
-  final trend = trendPointsFromPayload(payload);
-  if (trend.length < 2) return const [];
-  final raw = trend
-      .map((point) => IntradayPoint(
-            time: point.time,
-            estimatedNav: fallbackNav * (point.close / prePrice),
-            changePct: (point.close / prePrice - 1) * 100,
-          ))
-      .toList();
-  final finalRaw = raw.last.changePct;
-  double scale;
-  if (finalRaw.abs() < 0.05) {
-    scale = 0;
-  } else {
-    scale = anchorPct / finalRaw;
-    scale = scale.clamp(-3.0, 3.0).toDouble();
+  final klines = (data?['klines'] as List<dynamic>? ?? []).whereType<String>().toList();
+  if (klines.length < 3) return null;
+  final closes = <double>[];
+  for (final row in klines) {
+    final parts = row.split(',');
+    if (parts.length < 3) continue;
+    final close = toNullableDouble(parts[2]);
+    if (close != null && close > 0) closes.add(close);
   }
-  return raw.map((point) {
-    final minuteRatio = tradingMinute(point.time).clamp(0, 240).toDouble() / 240;
-    final adjustedPct = scale == 0 ? anchorPct * minuteRatio : point.changePct * scale;
-    return IntradayPoint(
-      time: point.time,
-      estimatedNav: fallbackNav * (1 + adjustedPct / 100),
-      changePct: adjustedPct,
-    );
-  }).toList();
+  if (closes.length < 3) return null;
+  double? trailingChange(int days) {
+    if (closes.length <= days) return null;
+    final base = closes[closes.length - days - 1];
+    final latest = closes.last;
+    if (base <= 0) return null;
+    return (latest / base - 1) * 100;
+  }
+
+  return BoardTrendStats(
+    recent3ChangePct: trailingChange(3),
+    recent5ChangePct: trailingChange(5),
+  );
 }
 
 TailChange? tailChangeBetween(List<TrendPoint> points, int startHour, int startMinuteValue, int endHour, int endMinuteValue) {
@@ -3789,8 +3867,8 @@ BoardSignal? boardSignalFromHoldings(String theme, List<StockHolding> holdings) 
   final amountRows = holdings.where((item) => item.amount != null).toList();
   final mappedAmount = amountRows.isEmpty ? null : amountRows.map((item) => item.amount! * item.holdingPct / 100).sum;
   return BoardSignal(
-    name: theme.isEmpty ? '重仓映射' : '$theme重仓映射',
-    source: '重仓股实时映射',
+    name: theme.isEmpty ? '重仓股测算' : '$theme重仓股测算',
+    source: '前十大重仓股实时测算',
     changePct: weightedChange,
     mainFlow: flow,
     mainFlowPct: averageHoldingFlowPct(holdings),
@@ -3930,14 +4008,15 @@ ForwardDecisionScore buildForwardDecisionScore({
   var fundFlowScore = 0;
   if (flow != null && flow > 1000000000) fundFlowScore = 2;
   if (flow != null && flow < -1000000000) fundFlowScore = -2;
+  final boardSourceHint = board?.source == '前十大重仓股实时测算' ? '按前十大重仓股实时表现测算，' : '';
 
   final fundFlowText = board == null
       ? '板块主力资金还在刷新，先不做强判断。'
       : flow == null
-          ? '${board.name}${pct(board.changePct)}，板块在动，但主力方向还不够清晰。'
+          ? '$boardSourceHint${board.name}${pct(board.changePct)}，板块在动，但主力方向还不够清晰。'
           : flow >= 0
-              ? '主力净流入 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，承接还在。'
-              : '主力净流出 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，抛压偏重。';
+              ? '$boardSourceHint主力净流入 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，承接还在。'
+              : '$boardSourceHint主力净流出 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，抛压偏重。';
 
   final readyTails = tailSignals.where((item) => item.ready && item.changePct != null).toList();
   final tailUpCount = readyTails.where((item) => item.changePct! > 1).length;
@@ -4082,17 +4161,6 @@ String toneFromScore(double score) {
   return 'warn';
 }
 
-List<StockHolding> applyThemeFallback(List<StockHolding> holdings, String theme) {
-  if (theme.isEmpty) return holdings;
-  return holdings.map((item) {
-    final industry = item.industry;
-    if (industry == '未知' || industry == 'undefined' || industry == '行业暂缺' || industry.isEmpty) {
-      return item.copyWith(industry: theme);
-    }
-    return item;
-  }).toList();
-}
-
 String holdingsLookupCode(FundBase fund) {
   const linkedTargets = {
     '012862': '159796',
@@ -4103,22 +4171,6 @@ String holdingsLookupCode(FundBase fund) {
 }
 
 bool isLinkedFund(String name) => RegExp(r'联接|ETF联接').hasMatch(name);
-
-IntradayProxy? intradayProxyForFund(FundBase fund, String theme) {
-  const byCode = {
-    '025687': IntradayProxy(secid: '90.BK1326', name: '半导体设备指数'),
-    '012862': IntradayProxy(secid: '0.159796', name: '汇添富中证电池主题ETF'),
-    '012863': IntradayProxy(secid: '0.159796', name: '汇添富中证电池主题ETF'),
-  };
-  final direct = byCode[fund.code];
-  if (direct != null) return direct;
-  if (isLinkedFund(fund.name) && holdingsLookupCode(fund) != fund.code) {
-    return IntradayProxy(secid: '0.${holdingsLookupCode(fund)}', name: '目标ETF ${holdingsLookupCode(fund)}');
-  }
-  if (theme == '半导体') return IntradayProxy(secid: '90.BK1326', name: '半导体设备指数');
-  if (theme == '电池' || theme == '新能源') return IntradayProxy(secid: '90.BK0951', name: '电池主题指数');
-  return null;
-}
 
 String inferTheme(String name) {
   if (RegExp(r'白酒|酒').hasMatch(name)) return '白酒';
@@ -4165,6 +4217,8 @@ String todayDateString() {
 String dateText(DateTime date) {
   return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
 }
+
+String shortDateText(DateTime date) => '${date.month}月${date.day}日';
 
 PortfolioItem settlePortfolioItem(PortfolioItem item, FundBase fund) {
   final last = fund.points.last;
@@ -4433,6 +4487,8 @@ ResonanceSignal buildResonanceSignal({
   final notes = <String>[];
 
   final boardStrength = board?.rpsPercentile;
+  final board3d = board?.recent3ChangePct;
+  final board5d = board?.recent5ChangePct;
   if (boardStrength != null) {
     if (boardStrength >= 90) {
       score += 2;
@@ -4443,6 +4499,22 @@ ResonanceSignal buildResonanceSignal({
     } else if (boardStrength < 50) {
       score -= 1;
       notes.add('${board!.name}当前强度落在市场后半区，反弹持续性一般');
+    }
+  }
+
+  if (boardStrength != null && board3d != null) {
+    if (boardStrength >= 85 && board3d >= 2.0) {
+      score += 1;
+      notes.add('${board!.name}最近 3 个交易日还在延续走强，主线惯性没有断。');
+    } else if (boardStrength < 50 && board3d <= 0) {
+      score -= 1;
+      notes.add('${board!.name}短线强度和近几天惯性都偏弱，反弹更容易走成一日游。');
+    }
+  } else if (board5d != null) {
+    if (board5d >= 4.0) {
+      notes.add('最近 5 个交易日板块修复幅度不小，后面要防止追高。');
+    } else if (board5d <= -4.0) {
+      notes.add('最近 5 个交易日仍在低位反复，只有资金回流时才更像修复窗口。');
     }
   }
 
