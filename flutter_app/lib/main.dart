@@ -80,7 +80,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       _simulated = _decodePortfolio(prefs.getString('simulated_portfolio'));
       _loading = false;
     });
-    await _refreshCurrent();
+    await _refreshCurrent(clearFirst: true);
   }
 
   List<PortfolioItem> _decodePortfolio(String? value) {
@@ -94,7 +94,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     await prefs.setString(_storageKey, jsonEncode(_currentItems.map((item) => item.toJson()).toList()));
   }
 
-  Future<void> _refreshCurrent() async {
+  Future<void> _refreshCurrent({bool clearFirst = false}) async {
     final items = List<PortfolioItem>.from(_currentItems);
     if (items.isEmpty) return;
     if (_refreshing) return;
@@ -102,6 +102,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     try {
       for (final item in items) {
         try {
+          if (clearFirst && mounted) setState(() => _cache.remove(item.code));
           final analysis = await _service.load(item);
           if (!mounted) return;
           setState(() => _cache[item.code] = analysis);
@@ -185,7 +186,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
         selectedIndex: _tab,
         onDestinationSelected: (index) async {
           setState(() => _tab = index);
-          await _refreshCurrent();
+          await _refreshCurrent(clearFirst: true);
         },
         destinations: const [
           NavigationDestination(icon: Icon(CupertinoIcons.briefcase), label: '持有'),
@@ -195,7 +196,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       body: _loading
           ? const Center(child: CupertinoActivityIndicator())
           : RefreshIndicator(
-              onRefresh: _refreshCurrent,
+              onRefresh: () => _refreshCurrent(clearFirst: true),
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 96),
@@ -397,7 +398,7 @@ class FundPositionCard extends StatelessWidget {
                   Expanded(child: _Metric(label: '持有金额', value: money(currentValue))),
                   Expanded(
                     child: _Metric(
-                      label: '实时估算',
+                      label: '今日变化',
                       value: data == null ? '分析中' : '${pct(data.todayPct)} / ${signedMoney(todayIncome)}',
                       color: positive ? AppColors.red : AppColors.green,
                     ),
@@ -492,7 +493,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   const SizedBox(height: 14),
                   Row(
                     children: [
-                      Expanded(child: _Metric(label: '实时估值', value: _analysis.realtimeNavText)),
+                      Expanded(child: _Metric(label: '净值/估值', value: _analysis.realtimeNavText)),
                       Expanded(child: _Metric(label: '更新时间', value: _analysis.realtimeTimeText)),
                     ],
                   ),
@@ -553,14 +554,18 @@ class _FundDetailPageState extends State<FundDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('重仓股与公告', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                  const Text('前十大重仓股', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
-                  if (_analysis.announcements.isEmpty)
-                    const Text('暂未抓到高影响公告。', style: TextStyle(color: AppColors.muted))
+                  if (_analysis.holdings.isEmpty)
+                    const Text('暂未抓到前十大重仓股。下拉刷新会重新请求季报持仓接口。', style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700))
                   else
+                    ..._analysis.holdings.take(10).map((item) => StockHoldingRow(item: item)),
+                  if (_analysis.announcements.isNotEmpty) ...[
+                    const Divider(height: 28),
+                    const Text('高影响公告', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 10),
                     ..._analysis.announcements.take(5).map((item) => AnnouncementTile(item: item)),
-                  const Divider(height: 28),
-                  ..._analysis.holdings.take(10).map((item) => StockHoldingRow(item: item)),
+                  ],
                 ],
               ),
             ),
@@ -1099,7 +1104,7 @@ class FundService {
 
   Future<FundBase> _loadFundBase(String code) async {
     final uri = Uri.parse('https://fund.eastmoney.com/pingzhongdata/$code.js?v=${DateTime.now().millisecondsSinceEpoch}');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 18));
+    final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 18));
     if (response.statusCode != 200) throw Exception('基金数据源暂时不可用');
     final raw = utf8.decode(response.bodyBytes);
     final name = RegExp(r'''var\s+fS_name\s*=\s*["']([^"']*)["'];''').firstMatch(raw)?.group(1) ?? '基金 $code';
@@ -1122,7 +1127,7 @@ class FundService {
   Future<RealtimeEstimate?> _loadRealtimeEstimate(String code) async {
     final uri = Uri.parse('http://fundgz.1234567.com.cn/js/$code.js?rt=${DateTime.now().millisecondsSinceEpoch}');
     try {
-      final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) return null;
       final raw = utf8.decode(response.bodyBytes, allowMalformed: true);
       final jsonText = RegExp(r'jsonpgz\((\{.*\})\);?', dotAll: true).firstMatch(raw)?.group(1);
@@ -1147,11 +1152,12 @@ class FundService {
     final endpoints = [
       Uri.https('fundcomapi.tiantianfunds.com', '/mm/fundTrade/FundValuationDetail', {
         'FCODE': code,
+        'rt': DateTime.now().millisecondsSinceEpoch.toString(),
       }),
     ];
     for (final uri in endpoints) {
       try {
-        final response = await _client.get(uri, headers: const {'Referer': 'https://fund.eastmoney.com/'}).timeout(const Duration(seconds: 8));
+        final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://fund.eastmoney.com/'})).timeout(const Duration(seconds: 8));
         if (response.statusCode != 200) continue;
         final raw = utf8.decode(response.bodyBytes, allowMalformed: true);
         final jsonText = extractJsonLike(raw);
@@ -1159,7 +1165,7 @@ class FundService {
         final payload = decodeNestedFundPayload(jsonDecode(jsonText));
         final points = _parseIntradayPayload(payload, realtime, fallbackNav);
         final minimum = minimumMinutePointCount();
-        if (points.length >= minimum) {
+        if (points.length >= minimum || (points.length >= 30 && !isTradingTime())) {
           return IntradaySeries(points: points, note: '已接入当日分钟估值，共 ${points.length} 个点；硬折线连接，不做平滑。');
         }
       } catch (_) {
@@ -1168,7 +1174,7 @@ class FundService {
     }
     return IntradaySeries(
       points: const [],
-      note: '暂未拿到足够的分钟级数据，不用少量点伪装分时线。交易时段下拉刷新再试。',
+      note: '暂未拿到足够的分钟级数据。已强制刷新分时接口；如果基金平台还没生成当日分钟估值，下拉刷新会继续重试。',
     );
   }
 
@@ -1250,38 +1256,28 @@ class FundService {
 
   Future<List<StockHolding>> _loadHoldings(String code) async {
     final year = DateTime.now().year;
-    final uri = Uri.parse('https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=$code&topline=10&year=$year&month=');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 18));
-    if (response.statusCode != 200) return [];
-    final raw = utf8.decode(response.bodyBytes);
-    var content = RegExp(r'content:"(.*?)",arryear', dotAll: true).firstMatch(raw)?.group(1) ?? raw;
-    content = content.replaceAll(r'\"', '"').replaceAll(r'\/', '/');
-    final rows = RegExp(r'<tr>(.*?)</tr>', dotAll: true).allMatches(content);
-    final holdings = <StockHolding>[];
-    for (final row in rows) {
-      final cells = RegExp(r'<td.*?>(.*?)</td>', dotAll: true).allMatches(row.group(1)!).map((cell) => stripTags(cell.group(1)!)).toList();
-      if (cells.length < 7) continue;
-      final stockCode = RegExp(r'\d{6}').firstMatch(cells[1])?.group(0);
-      if (stockCode == null) continue;
-      holdings.add(
-        StockHolding(
-          code: stockCode,
-          name: cells[2],
-          industry: '行业暂缺',
-          holdingPct: toDouble(cells[6].replaceAll('%', '').replaceAll(',', '')),
-        ),
+    for (final targetYear in [year, year - 1]) {
+      final uri = Uri.parse(
+        'https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=$code&topline=10&year=$targetYear&month=&rt=${DateTime.now().millisecondsSinceEpoch}',
       );
-      if (holdings.length >= 10) break;
+      try {
+        final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://fundf10.eastmoney.com/'})).timeout(const Duration(seconds: 18));
+        if (response.statusCode != 200) continue;
+        final holdings = parseHoldingsHtml(utf8.decode(response.bodyBytes));
+        if (holdings.isNotEmpty) return holdings;
+      } catch (_) {
+        continue;
+      }
     }
-    return holdings;
+    return [];
   }
 
   Future<List<StockHolding>> _enrichHoldings(List<StockHolding> holdings) async {
     if (holdings.isEmpty) return holdings;
     final secids = holdings.map((item) => '${marketFromCode(item.code)}.${item.code}').join(',');
-    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=$secids&fields=f2,f3,f6,f8,f12,f14,f62,f100,f184');
+    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=$secids&fields=f2,f3,f6,f8,f12,f14,f62,f100,f184&rt=${DateTime.now().millisecondsSinceEpoch}');
     try {
-      final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final data = payload['data'] as Map<String, dynamic>?;
       final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>();
@@ -1313,11 +1309,11 @@ class FundService {
   }
 
   Future<MarketSnapshot> _loadMarket(FundBase fund, String theme, List<StockHolding> holdings) async {
-    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001,0.399006,1.000300&fields=f2,f3,f12,f14');
+    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001,0.399006,1.000300&fields=f2,f3,f12,f14&rt=${DateTime.now().millisecondsSinceEpoch}');
     var label = '市场震荡';
     var avg = 0.0;
     try {
-      final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final data = payload['data'] as Map<String, dynamic>?;
       final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
@@ -1340,10 +1336,10 @@ class FundService {
     final candidates = <Map<String, dynamic>>[];
     for (final boardType in const ['2', '3']) {
       final uri = Uri.parse(
-        'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1000&po=1&np=1&fltt=2&fid=f3&fs=m:90+t:$boardType&fields=f12,f14,f3,f62,f184,f6,f2,f8',
+        'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1000&po=1&np=1&fltt=2&fid=f3&fs=m:90+t:$boardType&fields=f12,f14,f3,f62,f184,f6,f2,f8&rt=${DateTime.now().millisecondsSinceEpoch}',
       );
       try {
-        final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+        final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
         if (response.statusCode != 200) continue;
         final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
         final data = payload['data'] as Map<String, dynamic>?;
@@ -1377,10 +1373,10 @@ class FundService {
 
   Future<double?> _loadTrendVolumeRatio(String secid) async {
     final uri = Uri.parse(
-      'https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=$secid&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&iscca=0&ndays=2',
+      'https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=$secid&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&iscca=0&ndays=2&rt=${DateTime.now().millisecondsSinceEpoch}',
     );
     try {
-      final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) return null;
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final points = trendPointsFromPayload(payload);
@@ -1402,10 +1398,10 @@ class FundService {
   Future<StockTailSignal> _loadStockTailSignal(StockHolding holding) async {
     final secid = '${marketFromCode(holding.code)}.${holding.code}';
     final uri = Uri.parse(
-      'https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=$secid&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&iscca=0&ndays=1',
+      'https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=$secid&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&iscca=0&ndays=1&rt=${DateTime.now().millisecondsSinceEpoch}',
     );
     try {
-      final response = await _client.get(uri).timeout(const Duration(seconds: 7));
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 7));
       if (response.statusCode != 200) return StockTailSignal(code: holding.code, name: holding.name, ready: false);
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final points = trendPointsFromPayload(payload);
@@ -1434,8 +1430,8 @@ class FundService {
         'client_source': 'web',
         'stock_list': holding.code,
       }).query;
-      final uri = Uri.parse('https://np-anotice-stock.eastmoney.com/api/security/ann?$params');
-      final response = await _client.get(uri).timeout(const Duration(seconds: 12));
+      final uri = Uri.parse('https://np-anotice-stock.eastmoney.com/api/security/ann?$params&_=${DateTime.now().millisecondsSinceEpoch}');
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) return <Announcement>[];
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final data = payload['data'] as Map<String, dynamic>?;
@@ -1471,10 +1467,19 @@ class FundService {
     final drawdown = maxDrawdown(points.takeLast(90)) * 100;
     final contribution = holdings.where((item) => item.contributionPct != null).map((item) => item.contributionPct!).sum;
     final hasStockRealtime = holdings.any((item) => item.changePct != null);
-    final hasFundRealtime = realtime != null;
+    final useOfficialValue = shouldUseOfficialNav(last, realtime);
+    final hasFundRealtime = realtime != null && !useOfficialValue;
     final latestReturn = last.equityReturn ?? (returns.isEmpty ? 0 : returns.last);
-    final todayPct = hasFundRealtime ? realtime!.estimatePct : (hasStockRealtime ? contribution : latestReturn);
-    final decisionNav = hasFundRealtime ? realtime!.estimatedNav : last.value;
+    final todayPct = useOfficialValue
+        ? latestReturn
+        : hasFundRealtime
+            ? realtime!.estimatePct
+            : (hasStockRealtime ? contribution : latestReturn);
+    final decisionNav = useOfficialValue
+        ? last.value
+        : hasFundRealtime
+            ? realtime!.estimatedNav
+            : last.value;
     final majorNegative = announcements.where((item) => item.sentiment == '负面' && item.severity >= 80).firstOrNull;
     final isLiquor = theme == '白酒';
     var forward = buildForwardDecisionScore(board: market.board, tailSignals: tailSignals, todayPct: todayPct);
@@ -1564,7 +1569,9 @@ class FundService {
 
     final todayReason = [
       '今天是 ${todayDateString()}，最新正式净值公布到 ${last.date}。',
-      hasFundRealtime
+      useOfficialValue
+          ? '已切换为盘后实际净值 ${last.value.toStringAsFixed(4)}，实际涨跌 ${pct(todayPct)}。'
+          : hasFundRealtime
           ? '天天基金盘中估值 ${pct(todayPct)}，估算净值 ${realtime!.estimatedNav.toStringAsFixed(4)}，更新时间 ${realtime!.updateTime}。'
           : '盘中估值暂缺，用最新净值和重仓行情近似。',
       '板块：$sectorState。',
@@ -1575,9 +1582,11 @@ class FundService {
       if (majorNegative != null) '${majorNegative.stockName} 有重大负面公告：${majorNegative.title}。',
     ].join('');
 
-    final moduleA = todayPct >= 0
-        ? '今日盘中估值上涨 ${pct(todayPct)}，${forward.volumeText.replaceFirst('量价关系：', '')}。'
-        : '今日盘中出现 ${pct(todayPct)} 的回撤，${forward.volumeText.replaceFirst('量价关系：', '')}。';
+    final moduleA = useOfficialValue
+        ? '今日实际净值已更新，涨跌为 ${pct(todayPct)}，${forward.volumeText.replaceFirst('量价关系：', '')}。'
+        : todayPct >= 0
+            ? '今日盘中估值上涨 ${pct(todayPct)}，${forward.volumeText.replaceFirst('量价关系：', '')}。'
+            : '今日盘中出现 ${pct(todayPct)} 的回撤，${forward.volumeText.replaceFirst('量价关系：', '')}。';
     final moduleB = forward.total >= 3
         ? '虽然大盘可能仍有震荡，但${forward.fundFlowText.replaceFirst('板块资金：', '')}；${forward.tailText.replaceFirst('前三大重仓股尾盘：', '')}。'
         : forward.total <= -3
@@ -1617,10 +1626,18 @@ class FundService {
       buyReason: buyReason,
       sellReason: sellReason,
       summaryLine: '$todayState · 明天$tomorrowTrend · $action',
-      realtimeAvailable: hasFundRealtime,
-      realtimeNavText: hasFundRealtime ? realtime!.estimatedNav.toStringAsFixed(4) : last.value.toStringAsFixed(4),
-      realtimeTimeText: hasFundRealtime ? shortRealtimeTime(realtime!.updateTime) : '等待刷新',
-      realtimeStatus: hasFundRealtime ? '估值 ${shortRealtimeTime(realtime!.updateTime)}' : '净值日 ${last.date}',
+      realtimeAvailable: hasFundRealtime || useOfficialValue,
+      realtimeNavText: decisionNav.toStringAsFixed(4),
+      realtimeTimeText: useOfficialValue
+          ? '实际净值'
+          : hasFundRealtime
+              ? shortRealtimeTime(realtime!.updateTime)
+              : '等待刷新',
+      realtimeStatus: useOfficialValue
+          ? '实际净值 ${last.date}'
+          : hasFundRealtime
+              ? '估值 ${shortRealtimeTime(realtime!.updateTime)}'
+              : '净值日 ${last.date}',
       intradayPoints: intraday.points,
       intradayNote: intraday.note,
       decision: decision,
@@ -1992,6 +2009,41 @@ String? extractJsonLike(String raw) {
   final end = trimmed[start] == '{' ? trimmed.lastIndexOf('}') : trimmed.lastIndexOf(']');
   if (end <= start) return null;
   return trimmed.substring(start, end + 1);
+}
+
+Map<String, String> noCacheHeaders([Map<String, String> extra = const {}]) {
+  return {
+    'User-Agent': 'Mozilla/5.0',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    ...extra,
+  };
+}
+
+List<StockHolding> parseHoldingsHtml(String raw) {
+  var content = RegExp(r'content:"(.*?)",arryear', dotAll: true).firstMatch(raw)?.group(1) ?? raw;
+  content = content.replaceAll(r'\"', '"').replaceAll(r'\/', '/');
+  final rows = RegExp(r'<tr>(.*?)</tr>', dotAll: true).allMatches(content);
+  final holdings = <StockHolding>[];
+  for (final row in rows) {
+    final cells = RegExp(r'<td.*?>(.*?)</td>', dotAll: true).allMatches(row.group(1)!).map((cell) => stripTags(cell.group(1)!)).toList();
+    if (cells.length < 7) continue;
+    final stockCode = RegExp(r'\d{6}').firstMatch(cells[1])?.group(0);
+    if (stockCode == null) continue;
+    final name = cells.length > 2 ? cells[2] : '股票$stockCode';
+    final pctCell = cells.reversed.firstWhere((cell) => cell.contains('%'), orElse: () => '0');
+    final holdingPct = toDouble(pctCell.replaceAll('%', '').replaceAll(',', ''));
+    holdings.add(
+      StockHolding(
+        code: stockCode,
+        name: name,
+        industry: '行业暂缺',
+        holdingPct: holdingPct,
+      ),
+    );
+    if (holdings.length >= 10) break;
+  }
+  return holdings;
 }
 
 dynamic decodeNestedFundPayload(dynamic payload) {
@@ -2496,6 +2548,31 @@ String dateFromMillis(int millis) {
 String todayDateString() {
   final date = DateTime.now();
   return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+}
+
+bool shouldUseOfficialNav(NavPoint last, RealtimeEstimate? realtime) {
+  if (last.equityReturn == null) return false;
+  final officialDate = DateTime.tryParse(last.date);
+  final realtimeDate = realtime == null ? null : parseDateFromText(realtime.updateTime);
+  if (officialDate != null && realtimeDate != null && officialDate.isAfter(realtimeDate)) return true;
+  if (isTradingTime()) return false;
+  final now = DateTime.now();
+  final minute = now.hour * 60 + now.minute;
+  final afterOfficialWindow = minute >= 20 * 60 || minute < 9 * 60 + 30;
+  if (!afterOfficialWindow) return false;
+  if (officialDate == null) return true;
+  if (realtimeDate == null) return true;
+  return !officialDate.isBefore(realtimeDate);
+}
+
+DateTime? parseDateFromText(String value) {
+  final match = RegExp(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})').firstMatch(value);
+  if (match == null) return null;
+  return DateTime(
+    int.parse(match.group(1)!),
+    int.parse(match.group(2)!),
+    int.parse(match.group(3)!),
+  );
 }
 
 bool isTradingTime() {
