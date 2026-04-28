@@ -585,11 +585,29 @@ class _FundDetailPageState extends State<FundDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('今天怎么做', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text('今天怎么做', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                      ),
+                      if (!emphasizeBuy)
+                        TextButton.icon(
+                          onPressed: _addPendingBuy,
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppColors.muted,
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(0, 32),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          icon: const Icon(CupertinoIcons.add, size: 16),
+                          label: const Text('手动记账'),
+                        ),
+                    ],
+                  ),
                   const SizedBox(height: 12),
                   Text(_analysis.action, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 12),
-                  if (emphasizeBuy)
+                  if (emphasizeBuy) ...[
+                    const SizedBox(height: 12),
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
@@ -604,21 +622,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                         label: const Text('加仓'),
                       ),
                     )
-                  else
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                        onPressed: _addPendingBuy,
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppColors.muted,
-                          padding: EdgeInsets.zero,
-                          minimumSize: const Size(0, 36),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        icon: const Icon(CupertinoIcons.add, size: 16),
-                        label: const Text('手动记账'),
-                      ),
-                    ),
+                  ],
                   const SizedBox(height: 12),
                   if (hasOperation)
                     Row(
@@ -2332,7 +2336,7 @@ class FundService {
       buyRatio = 0.0;
       sellRatio = 0.0;
       tomorrowTrend = '多空分歧大，方向不明';
-      action = '观望，切勿盲动';
+      action = '风险高，先观望';
     }
     if (amountLevel == '仓位偏重' && totalScore < 0) {
       sellRatio = max(sellRatio, 0.05);
@@ -2353,7 +2357,9 @@ class FundService {
     final smartMoneyTone = smartMoney.tone;
     final resonanceTone = resonance.tone;
     final decisionSummary = buyRatio == 0 && sellRatio == 0
-        ? '今天先观望，等更明确的止跌或放量信号。'
+        ? confidence == '极低'
+            ? '当前多空分歧太大，今天先观望，不要硬做判断。'
+            : '今天先观望，等更明确的止跌或放量信号。'
         : buyRatio > 0 && sellRatio == 0
             ? '今天更适合小额试探，不适合一把追进去。'
         : sellRatio > 0 && buyRatio == 0
