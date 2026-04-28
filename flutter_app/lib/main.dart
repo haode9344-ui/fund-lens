@@ -1954,7 +1954,7 @@ class FundService {
     if (hits.isEmpty) {
       return TextFactorSignal(text: '最近未见核心重仓股出现新的龙虎榜席位异动。', score: 0, hitCount: 0);
     }
-    final score = hits.map((item) => item.score).sum.clamp(-2, 2).toInt();
+    final score = hits.fold<int>(0, (value, item) => value + item.score).clamp(-2, 2).toInt();
     return TextFactorSignal(
       text: hits.take(2).map((item) => item.text).join('；'),
       score: score,
@@ -2006,7 +2006,7 @@ class FundService {
     if (hits.isEmpty) {
       return TextFactorSignal(text: '最近没有看到核心重仓股出现明显折价的大宗交易。', score: 0, hitCount: 0);
     }
-    final score = hits.map((item) => item.score).sum.clamp(-2, 2).toInt();
+    final score = hits.fold<int>(0, (value, item) => value + item.score).clamp(-2, 2).toInt();
     return TextFactorSignal(
       text: hits.take(2).map((item) => item.text).join('；'),
       score: score,
@@ -4597,7 +4597,7 @@ List<double> dailyReturns(List<NavPoint> points) {
 List<double> recentReturns(List<NavPoint> points, int days) => dailyReturns(points).takeLast(days);
 
 double atrProxy(List<NavPoint> points, int period) {
-  final sample = dailyReturns(points).map((item) => item.abs()).takeLast(period).toList();
+  final sample = dailyReturns(points).takeLast(period).map((item) => item.abs()).toList();
   if (sample.isEmpty) return 0;
   return sample.averageOrZero;
 }
