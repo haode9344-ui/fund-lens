@@ -99,20 +99,34 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     if (items.isEmpty) return;
     if (_refreshing) return;
     _refreshing = true;
+    var changedItems = false;
     try {
       for (final item in items) {
         try {
           if (clearFirst && mounted) setState(() => _cache.remove(item.code));
           final analysis = await _service.load(item);
           if (!mounted) return;
-          setState(() => _cache[item.code] = analysis);
+          setState(() {
+            _cache[item.code] = analysis;
+            changedItems = _replaceCurrentItem(analysis.settledItem) || changedItems;
+          });
         } catch (_) {
           // Keep the previous analysis visible when one data source is temporarily slow.
         }
       }
+      if (changedItems) await _saveCurrent();
     } finally {
       _refreshing = false;
     }
+  }
+
+  bool _replaceCurrentItem(PortfolioItem item) {
+    final target = _tab == 0 ? _owned : _simulated;
+    final index = target.indexWhere((row) => row.code == item.code);
+    if (index < 0) return false;
+    if (jsonEncode(target[index].toJson()) == jsonEncode(item.toJson())) return false;
+    target[index] = item;
+    return true;
   }
 
   Future<void> _addFund() async {
@@ -149,7 +163,14 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       await _saveCurrent();
     }
     final fresh = await _service.load(updated);
-    if (mounted) setState(() => _cache[updated.code] = fresh);
+    if (mounted) {
+      setState(() {
+        _cache[updated.code] = fresh;
+        final index = target.indexWhere((item) => item.code == updated.code);
+        if (index >= 0) target[index] = fresh.settledItem;
+      });
+      await _saveCurrent();
+    }
     return fresh;
   }
 
@@ -360,6 +381,7 @@ class FundPositionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final data = analysis;
     final currentValue = positionValue(item);
+    final pending = item.pendingAmount;
     final todayIncome = data == null ? 0.0 : currentValue * data.todayPct / 100;
     final positive = todayIncome >= 0;
     return Padding(
@@ -405,6 +427,13 @@ class FundPositionCard extends StatelessWidget {
                   ),
                 ],
               ),
+              if (pending > 0) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '买入确认中：${money(pending)}',
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800),
+                ),
+              ],
               const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.all(12),
@@ -452,12 +481,36 @@ class _FundDetailPageState extends State<FundDetailPage> {
 
   Future<void> _refresh() async {
     final fresh = await widget.onUpdateItem(_item);
-    if (mounted) setState(() => _analysis = fresh);
+    if (mounted) {
+      setState(() {
+        _analysis = fresh;
+        _item = fresh.settledItem;
+      });
+    }
+  }
+
+  Future<void> _addPendingBuy() async {
+    final amount = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const AddBuySheet(),
+    );
+    if (amount == null || amount <= 0) return;
+    final updated = _item.addPendingBuy(amount);
+    final fresh = await widget.onUpdateItem(updated);
+    if (mounted) {
+      setState(() {
+        _analysis = fresh;
+        _item = fresh.settledItem;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final currentValue = positionValue(_item);
+    final pending = _item.pendingAmount;
     final buyAmount = currentValue * _analysis.buyRatio;
     final sellAmount = currentValue * _analysis.sellRatio;
     final hasOperation = buyAmount > 0.01 || sellAmount > 0.01;
@@ -497,6 +550,10 @@ class _FundDetailPageState extends State<FundDetailPage> {
                       Expanded(child: _Metric(label: '更新时间', value: _analysis.realtimeTimeText)),
                     ],
                   ),
+                  if (pending > 0) ...[
+                    const SizedBox(height: 12),
+                    PendingBuySummary(item: _item),
+                  ],
                 ],
               ),
             ),
@@ -514,6 +571,15 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   const Text('今天怎么做', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
                   Text(_analysis.action, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _addPendingBuy,
+                      icon: const Icon(CupertinoIcons.plus_circle),
+                      label: const Text('加仓'),
+                    ),
+                  ),
                   const SizedBox(height: 12),
                   if (hasOperation)
                     Row(
@@ -555,6 +621,10 @@ class _FundDetailPageState extends State<FundDetailPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text('前十大重仓股', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                  if (_analysis.holdingSourceText.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(_analysis.holdingSourceText, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+                  ],
                   const SizedBox(height: 12),
                   if (_analysis.holdings.isEmpty)
                     const Text('暂未抓到前十大重仓股。下拉刷新会重新请求季报持仓接口。', style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700))
@@ -656,6 +726,103 @@ class _AddFundSheetState extends State<AddFundSheet> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class AddBuySheet extends StatefulWidget {
+  const AddBuySheet({super.key});
+
+  @override
+  State<AddBuySheet> createState() => _AddBuySheetState();
+}
+
+class _AddBuySheetState extends State<AddBuySheet> {
+  final TextEditingController _amountController = TextEditingController();
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final amount = double.tryParse(_amountController.text.trim()) ?? 0;
+    if (amount <= 0) return;
+    Navigator.pop(context, amount);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final order = pendingOrderPlan(DateTime.now());
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottom),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+        decoration: const BoxDecoration(
+          color: AppColors.bg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('加仓', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+            const SizedBox(height: 10),
+            Text(order.note, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 14),
+            CupertinoTextField(
+              controller: _amountController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              placeholder: '加仓金额',
+              padding: const EdgeInsets.all(15),
+              decoration: inputDecoration(),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _submit,
+                icon: const Icon(CupertinoIcons.checkmark_circle),
+                label: const Text('加入确认中'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class PendingBuySummary extends StatelessWidget {
+  const PendingBuySummary({super.key, required this.item});
+
+  final PortfolioItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.softBlue,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFD8E9FF)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('买入确认中：${money(item.pendingAmount)}', style: const TextStyle(fontWeight: FontWeight.w900)),
+          const SizedBox(height: 5),
+          ...item.pendingBuys.take(3).map(
+                (order) => Text(
+                  '${money(order.amount)} · ${order.note}',
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.4, fontWeight: FontWeight.w700),
+                ),
+              ),
+        ],
       ),
     );
   }
@@ -1091,15 +1258,18 @@ class FundService {
   Future<FundAnalysis> load(PortfolioItem item) async {
     final code = item.code;
     final fund = await _loadFundBase(code);
-    final realtime = await _loadRealtimeEstimate(code);
-    final intraday = await _loadIntradayTrend(code, realtime, fund.points.last.value);
-    final rawHoldings = await _loadHoldings(code);
     final theme = inferTheme(fund.name);
+    final settledItem = settlePortfolioItem(item, fund);
+    final realtime = await _loadRealtimeEstimate(code);
+    final intraday = await _loadIntradayTrend(code, fund, theme, realtime, fund.points.last.value);
+    final holdingCode = holdingsLookupCode(fund);
+    final rawHoldings = await _loadHoldings(holdingCode);
+    final holdingSourceText = holdingCode == code ? '' : '联接基金持仓已切换为目标 ETF $holdingCode 的前十大股票。';
     final holdings = await _enrichHoldings(applyThemeFallback(rawHoldings, theme));
     final tailSignals = await _loadStockTailSignals(holdings);
     final announcements = await _loadAnnouncements(holdings.take(5).toList());
     final market = await _loadMarket(fund, theme, holdings);
-    return _analyze(fund, holdings, announcements, market, theme, realtime, intraday, tailSignals, item);
+    return _analyze(fund, holdings, announcements, market, theme, realtime, intraday, tailSignals, settledItem, holdingSourceText);
   }
 
   Future<FundBase> _loadFundBase(String code) async {
@@ -1148,7 +1318,7 @@ class FundService {
     }
   }
 
-  Future<IntradaySeries> _loadIntradayTrend(String code, RealtimeEstimate? realtime, double fallbackNav) async {
+  Future<IntradaySeries> _loadIntradayTrend(String code, FundBase fund, String theme, RealtimeEstimate? realtime, double fallbackNav) async {
     final endpoints = [
       Uri.https('fundcomapi.tiantianfunds.com', '/mm/fundTrade/FundValuationDetail', {
         'FCODE': code,
@@ -1172,10 +1342,34 @@ class FundService {
         continue;
       }
     }
+    final proxy = intradayProxyForFund(fund, theme);
+    if (proxy != null) {
+      final proxySeries = await _loadProxyIntradayTrend(proxy, realtime?.estimatePct ?? fund.points.last.equityReturn ?? 0, fallbackNav);
+      if (proxySeries.points.isNotEmpty) return proxySeries;
+    }
     return IntradaySeries(
       points: const [],
       note: '暂未拿到足够的分钟级数据。已强制刷新分时接口；如果基金平台还没生成当日分钟估值，下拉刷新会继续重试。',
     );
+  }
+
+  Future<IntradaySeries> _loadProxyIntradayTrend(IntradayProxy proxy, double anchorPct, double fallbackNav) async {
+    final uri = Uri.parse(
+      'https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=${proxy.secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&iscca=0&ndays=1&rt=${DateTime.now().millisecondsSinceEpoch}',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return IntradaySeries(points: const [], note: '');
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final points = proxyIntradayPointsFromPayload(payload, anchorPct, fallbackNav);
+      if (points.length < 20) return IntradaySeries(points: const [], note: '');
+      return IntradaySeries(
+        points: points,
+        note: '场外基金没有真实分钟成交价，已使用${proxy.name}分时走势，并把收盘端点锚定到基金当日估值/实际涨跌。',
+      );
+    } catch (_) {
+      return IntradaySeries(points: const [], note: '');
+    }
   }
 
   List<IntradayPoint> _parseIntradayPayload(dynamic payload, RealtimeEstimate? realtime, double fallbackNav) {
@@ -1459,6 +1653,7 @@ class FundService {
     IntradaySeries intraday,
     List<StockTailSignal> tailSignals,
     PortfolioItem item,
+    String holdingSourceText,
   ) {
     final points = fund.points;
     final last = points.last;
@@ -1646,22 +1841,124 @@ class FundService {
       liquorSpecial: isLiquor
           ? '估值位置：$valuationBackground；龙头业绩：${majorNegative == null ? '关注茅台、五粮液、泸州老窖经营数据' : '五粮液管理层公告偏负面'}；消费情绪：${last20 > 0 ? '中性修复' : '偏弱'}；节假日效应：${holidayEffect()}；机构拥挤度：${std(returns.takeLast(30)) > 1.4 ? '中高' : '中'}。'
           : null,
+      settledItem: item,
+      holdingSourceText: holdingSourceText,
     );
   }
 }
 
+class PendingBuy {
+  PendingBuy({
+    required this.amount,
+    required this.orderDate,
+    required this.confirmDate,
+    required this.beforeCutoff,
+    required this.note,
+  });
+
+  final double amount;
+  final String orderDate;
+  final String confirmDate;
+  final bool beforeCutoff;
+  final String note;
+
+  factory PendingBuy.fromJson(Map<String, dynamic> json) => PendingBuy(
+        amount: toDouble(json['amount']),
+        orderDate: (json['orderDate'] ?? '').toString(),
+        confirmDate: (json['confirmDate'] ?? '').toString(),
+        beforeCutoff: json['beforeCutoff'] == true,
+        note: (json['note'] ?? '').toString(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'amount': amount,
+        'orderDate': orderDate,
+        'confirmDate': confirmDate,
+        'beforeCutoff': beforeCutoff,
+        'note': note,
+      };
+}
+
+class PendingOrderPlan {
+  PendingOrderPlan({required this.confirmDate, required this.beforeCutoff, required this.note});
+
+  final String confirmDate;
+  final bool beforeCutoff;
+  final String note;
+}
+
 class PortfolioItem {
-  PortfolioItem({required this.code, required this.amount});
+  PortfolioItem({
+    required this.code,
+    required this.amount,
+    this.shares,
+    this.lastSettledDate = '',
+    this.lastSettledNav = 0,
+    List<PendingBuy>? pendingBuys,
+  }) : pendingBuys = pendingBuys ?? const [];
 
   final String code;
   final double amount;
+  final double? shares;
+  final String lastSettledDate;
+  final double lastSettledNav;
+  final List<PendingBuy> pendingBuys;
+
+  double get pendingAmount => pendingBuys.map((item) => item.amount).sum;
 
   factory PortfolioItem.fromJson(Map<String, dynamic> json) => PortfolioItem(
         code: json['code'].toString(),
         amount: toDouble(json['amount']),
+        shares: toNullableDouble(json['shares']),
+        lastSettledDate: (json['lastSettledDate'] ?? '').toString(),
+        lastSettledNav: toDouble(json['lastSettledNav']),
+        pendingBuys: (json['pendingBuys'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(PendingBuy.fromJson)
+            .toList(),
       );
 
-  Map<String, dynamic> toJson() => {'code': code, 'amount': amount};
+  PortfolioItem copyWith({
+    double? amount,
+    double? shares,
+    String? lastSettledDate,
+    double? lastSettledNav,
+    List<PendingBuy>? pendingBuys,
+  }) {
+    return PortfolioItem(
+      code: code,
+      amount: amount ?? this.amount,
+      shares: shares ?? this.shares,
+      lastSettledDate: lastSettledDate ?? this.lastSettledDate,
+      lastSettledNav: lastSettledNav ?? this.lastSettledNav,
+      pendingBuys: pendingBuys ?? this.pendingBuys,
+    );
+  }
+
+  PortfolioItem addPendingBuy(double value) {
+    final plan = pendingOrderPlan(DateTime.now());
+    return copyWith(
+      pendingBuys: [
+        ...pendingBuys,
+        PendingBuy(
+          amount: value,
+          orderDate: todayDateString(),
+          confirmDate: plan.confirmDate,
+          beforeCutoff: plan.beforeCutoff,
+          note: plan.note,
+        ),
+      ],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'code': code,
+        'amount': amount,
+        'shares': shares,
+        'lastSettledDate': lastSettledDate,
+        'lastSettledNav': lastSettledNav,
+        'pendingBuys': pendingBuys.map((item) => item.toJson()).toList(),
+      };
 }
 
 class PortfolioSummary {
@@ -1710,6 +2007,13 @@ class IntradaySeries {
 
   final List<IntradayPoint> points;
   final String note;
+}
+
+class IntradayProxy {
+  const IntradayProxy({required this.secid, required this.name});
+
+  final String secid;
+  final String name;
 }
 
 class IntradayPoint {
@@ -1940,6 +2244,8 @@ class FundAnalysis {
     required this.holdings,
     required this.announcements,
     required this.liquorSpecial,
+    required this.settledItem,
+    required this.holdingSourceText,
   });
 
   final String code;
@@ -1971,6 +2277,8 @@ class FundAnalysis {
   final List<StockHolding> holdings;
   final List<Announcement> announcements;
   final String? liquorSpecial;
+  final PortfolioItem settledItem;
+  final String holdingSourceText;
 }
 
 class AppColors {
@@ -2207,6 +2515,38 @@ List<TrendPoint> trendPointsFromPayload(Map<String, dynamic> payload) {
   }
   points.sort((a, b) => a.time.compareTo(b.time));
   return points;
+}
+
+List<IntradayPoint> proxyIntradayPointsFromPayload(Map<String, dynamic> payload, double anchorPct, double fallbackNav) {
+  final data = payload['data'] as Map<String, dynamic>?;
+  final prePrice = toDouble(data?['prePrice']);
+  if (prePrice <= 0) return const [];
+  final trend = trendPointsFromPayload(payload);
+  if (trend.length < 2) return const [];
+  final raw = trend
+      .map((point) => IntradayPoint(
+            time: point.time,
+            estimatedNav: fallbackNav * (point.close / prePrice),
+            changePct: (point.close / prePrice - 1) * 100,
+          ))
+      .toList();
+  final finalRaw = raw.last.changePct;
+  double scale;
+  if (finalRaw.abs() < 0.05) {
+    scale = 0;
+  } else {
+    scale = anchorPct / finalRaw;
+    scale = scale.clamp(-3.0, 3.0).toDouble();
+  }
+  return raw.map((point) {
+    final minuteRatio = tradingMinute(point.time).clamp(0, 240).toDouble() / 240;
+    final adjustedPct = scale == 0 ? anchorPct * minuteRatio : point.changePct * scale;
+    return IntradayPoint(
+      time: point.time,
+      estimatedNav: fallbackNav * (1 + adjustedPct / 100),
+      changePct: adjustedPct,
+    );
+  }).toList();
 }
 
 TailChange? tailChangeBetween(List<TrendPoint> points, int startHour, int startMinuteValue, int endHour, int endMinuteValue) {
@@ -2508,6 +2848,33 @@ List<StockHolding> applyThemeFallback(List<StockHolding> holdings, String theme)
   }).toList();
 }
 
+String holdingsLookupCode(FundBase fund) {
+  const linkedTargets = {
+    '012862': '159796',
+    '012863': '159796',
+  };
+  if (!isLinkedFund(fund.name)) return fund.code;
+  return linkedTargets[fund.code] ?? fund.code;
+}
+
+bool isLinkedFund(String name) => RegExp(r'联接|ETF联接').hasMatch(name);
+
+IntradayProxy? intradayProxyForFund(FundBase fund, String theme) {
+  const byCode = {
+    '025687': IntradayProxy(secid: '90.BK1326', name: '半导体设备指数'),
+    '012862': IntradayProxy(secid: '0.159796', name: '汇添富中证电池主题ETF'),
+    '012863': IntradayProxy(secid: '0.159796', name: '汇添富中证电池主题ETF'),
+  };
+  final direct = byCode[fund.code];
+  if (direct != null) return direct;
+  if (isLinkedFund(fund.name) && holdingsLookupCode(fund) != fund.code) {
+    return IntradayProxy(secid: '0.${holdingsLookupCode(fund)}', name: '目标ETF ${holdingsLookupCode(fund)}');
+  }
+  if (theme == '半导体') return IntradayProxy(secid: '90.BK1326', name: '半导体设备指数');
+  if (theme == '电池' || theme == '新能源') return IntradayProxy(secid: '90.BK0951', name: '电池主题指数');
+  return null;
+}
+
 String inferTheme(String name) {
   if (RegExp(r'白酒|酒').hasMatch(name)) return '白酒';
   if (RegExp(r'医药|医疗|生物').hasMatch(name)) return '医药';
@@ -2547,7 +2914,86 @@ String dateFromMillis(int millis) {
 
 String todayDateString() {
   final date = DateTime.now();
+  return dateText(date);
+}
+
+String dateText(DateTime date) {
   return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+}
+
+PortfolioItem settlePortfolioItem(PortfolioItem item, FundBase fund) {
+  final last = fund.points.last;
+  if (last.value <= 0) return item;
+  var shares = item.shares;
+  var amount = item.amount;
+  var settledDate = item.lastSettledDate;
+  var settledNav = item.lastSettledNav;
+  var pending = List<PendingBuy>.from(item.pendingBuys);
+
+  shares ??= amount > 0 ? amount / last.value : 0;
+  if (settledDate.isEmpty) {
+    settledDate = last.date;
+    settledNav = last.value;
+  }
+
+  if (last.equityReturn != null) {
+    final remaining = <PendingBuy>[];
+    for (final order in pending) {
+      if (compareDateText(order.confirmDate, last.date) <= 0) {
+        shares = (shares ?? 0) + order.amount / last.value;
+      } else {
+        remaining.add(order);
+      }
+    }
+    final hasNewNav = compareDateText(last.date, settledDate) > 0;
+    final confirmedOrder = remaining.length != pending.length;
+    if (hasNewNav || confirmedOrder) {
+      amount = (shares ?? 0) * last.value;
+      settledDate = last.date;
+      settledNav = last.value;
+    }
+    pending = remaining;
+  }
+
+  return item.copyWith(
+    amount: amount,
+    shares: shares,
+    lastSettledDate: settledDate,
+    lastSettledNav: settledNav,
+    pendingBuys: pending,
+  );
+}
+
+PendingOrderPlan pendingOrderPlan(DateTime now) {
+  final beforeCutoff = isFundTradingDay(now) && (now.hour * 60 + now.minute) < 15 * 60;
+  final confirm = beforeCutoff ? now : nextTradingDate(now);
+  final confirmText = dateText(confirm);
+  return PendingOrderPlan(
+    confirmDate: confirmText,
+    beforeCutoff: beforeCutoff,
+    note: beforeCutoff ? '15:00前买入，按今日夜间公布净值确认份额' : '已过15:00或非交易日，按下一交易日净值确认',
+  );
+}
+
+DateTime nextTradingDate(DateTime value) {
+  var date = DateTime(value.year, value.month, value.day).add(const Duration(days: 1));
+  while (!isFundTradingDay(date)) {
+    date = date.add(const Duration(days: 1));
+  }
+  return date;
+}
+
+bool isFundTradingDay(DateTime value) {
+  return value.weekday != DateTime.saturday && value.weekday != DateTime.sunday;
+}
+
+int compareDateText(String a, String b) {
+  final da = DateTime.tryParse(a);
+  final db = DateTime.tryParse(b);
+  if (da == null && db == null) return 0;
+  if (da == null) return -1;
+  if (db == null) return 1;
+  return da.compareTo(db);
 }
 
 bool shouldUseOfficialNav(NavPoint last, RealtimeEstimate? realtime) {
