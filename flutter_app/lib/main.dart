@@ -1976,10 +1976,14 @@ class FundService {
       if (response.statusCode != 200) return TextFactorSignal(text: '', score: 0);
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final rows = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
-      final row = rows.firstWhereOrNull((item) {
+      Map<String, dynamic>? row;
+      for (final item in rows) {
         final tradeDate = parseDateFromText((item['TRADE_DATE'] ?? '').toString());
-        return tradeDate != null && DateTime.now().difference(tradeDate).inDays <= 120;
-      });
+        if (tradeDate != null && DateTime.now().difference(tradeDate).inDays <= 120) {
+          row = item;
+          break;
+        }
+      }
       if (row == null) return TextFactorSignal(text: '', score: 0);
       final buyTimes = max(toInt(row['BUY_TIMES']), toInt(row['BUY_COUNT']));
       final sellTimes = max(toInt(row['SELL_TIMES']), toInt(row['SELL_COUNT']));
