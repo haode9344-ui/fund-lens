@@ -3814,10 +3814,10 @@ DurationSignal buildDurationSignal({
   final ma20 = movingAverage(points, 20);
   final bias5 = biasFromAverage(decisionNav, ma5);
   final bias20 = biasFromAverage(decisionNav, ma20);
-  final support = points.takeLast(20).map((item) => item.value).reduce(min);
-  final resistance = points.takeLast(60).map((item) => item.value).reduce(max);
-  final supportGapPct = support > 0 ? (decisionNav / support - 1) * 100 : 0;
-  final resistanceGapPct = decisionNav > 0 ? (resistance / decisionNav - 1) * 100 : 0;
+  final support = points.takeLast(20).map((item) => item.value).reduce(min).toDouble();
+  final resistance = points.takeLast(60).map((item) => item.value).reduce(max).toDouble();
+  final supportGapPct = (support > 0 ? (decisionNav / support - 1) * 100 : 0.0).toDouble();
+  final resistanceGapPct = (decisionNav > 0 ? (resistance / decisionNav - 1) * 100 : 0.0).toDouble();
 
   String summary;
   String tone;
