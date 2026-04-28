@@ -670,7 +670,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   ],
                   const SizedBox(height: 12),
                   if (_analysis.holdings.isEmpty)
-                    const Text('暂未抓到前十大重仓股。下拉刷新会重新请求季报持仓接口。', style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700))
+                    const Text('暂时还没拿到最新的前十大重仓股，下拉刷新后会再试一次。', style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700))
                   else
                     ..._analysis.holdings.take(10).map((item) => StockHoldingRow(item: item)),
                   if (_analysis.announcements.isNotEmpty) ...[
@@ -1476,7 +1476,7 @@ class FundService {
     }
     return IntradaySeries(
       points: const [],
-      note: '暂未拿到足够的分钟级数据。已强制刷新分时接口；如果基金平台还没生成当日分钟估值，下拉刷新会继续重试。',
+      note: '暂时还没拿到足够的分钟级走势，稍后下拉刷新会继续补全。',
     );
   }
 
