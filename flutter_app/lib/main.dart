@@ -517,7 +517,6 @@ class _FundDetailPageState extends State<FundDetailPage> {
     final showBuyReason = buyAmount > 0.01;
     final showSellReason = sellAmount > 0.01;
     final emphasizeBuy = showBuyReason && !showSellReason;
-    final hasLockHint = _analysis.todayLockedAt.isNotEmpty || _analysis.tomorrowLockedAt.isNotEmpty;
     return Scaffold(
       appBar: AppBar(
         title: const Text('基金分析', style: TextStyle(fontWeight: FontWeight.w900)),
@@ -540,21 +539,6 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(_analysis.name, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900, height: 1.08)),
-                  if (hasLockHint) ...[
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        const Icon(CupertinoIcons.lock_fill, size: 13, color: AppColors.muted),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            _analysis.lockHintText,
-                            style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
                   const SizedBox(height: 16),
                   Row(
                     children: [
@@ -605,33 +589,36 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   const SizedBox(height: 12),
                   Text(_analysis.action, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: emphasizeBuy
-                        ? FilledButton.icon(
-                            onPressed: _addPendingBuy,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: AppColors.blue,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            ),
-                            icon: const Icon(CupertinoIcons.plus_circle),
-                            label: const Text('加仓'),
-                          )
-                        : OutlinedButton.icon(
-                            onPressed: _addPendingBuy,
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: AppColors.muted,
-                              backgroundColor: AppColors.softGrey,
-                              side: const BorderSide(color: AppColors.line),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            ),
-                            icon: const Icon(CupertinoIcons.plus_circle),
-                            label: const Text('加仓'),
-                          ),
-                  ),
+                  if (emphasizeBuy)
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _addPendingBuy,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.blue,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        icon: const Icon(CupertinoIcons.plus_circle),
+                        label: const Text('加仓'),
+                      ),
+                    )
+                  else
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: _addPendingBuy,
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.muted,
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(0, 36),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        icon: const Icon(CupertinoIcons.add, size: 16),
+                        label: const Text('手动记账'),
+                      ),
+                    ),
                   const SizedBox(height: 12),
                   if (hasOperation)
                     Row(
@@ -971,17 +958,22 @@ class PredictionMetric extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 5),
         Row(
           children: [
-            Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+            Flexible(
+              child: Text(
+                value,
+                style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.w900),
+              ),
+            ),
             if (locked) ...[
-              const SizedBox(width: 4),
-              const Icon(CupertinoIcons.lock_fill, size: 12, color: AppColors.muted),
+              const SizedBox(width: 5),
+              const Icon(CupertinoIcons.lock, size: 13, color: AppColors.muted),
             ],
           ],
         ),
-        const SizedBox(height: 5),
-        Text(value, style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.w900)),
       ],
     );
   }
@@ -1241,7 +1233,9 @@ class DecisionModelCard extends StatelessWidget {
           _DecisionRow(label: '外围背景', value: decision.macroState, tone: decision.macroTone),
           _DecisionRow(label: '板块资金', value: decision.valuationState, tone: decision.valuationTone),
           _DecisionRow(label: '尾盘动向', value: decision.trendState, tone: decision.trendTone),
+          _DecisionRow(label: '聪明资金', value: decision.smartMoneyState, tone: decision.smartMoneyTone),
           _DecisionRow(label: '量价北向', value: decision.costDeviationText, tone: decision.deviationTone),
+          _DecisionRow(label: '趋势共振', value: decision.resonanceState, tone: decision.resonanceTone),
           _DecisionRow(label: '持续判断', value: decision.durationState, tone: decision.durationTone),
           _DecisionRow(label: '持仓动作', value: decision.gridTrigger, tone: decision.deviationTone),
           if (decision.reason.isNotEmpty) ...[
@@ -1270,7 +1264,7 @@ class _DecisionRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 74,
+            width: 78,
             child: Text(label, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
           ),
           Icon(toneIcon(tone), color: color, size: 18),
@@ -1384,9 +1378,14 @@ class FundService {
     final rawHoldings = await _loadHoldings(holdingCode);
     final holdingSourceText = holdingCode == code ? '' : '该基金为联接基金，此处展示底层目标 ETF $holdingCode 的核心重仓股穿透数据。';
     final holdings = await _enrichHoldings(applyThemeFallback(rawHoldings, theme));
-    final tailSignals = await _loadStockTailSignals(holdings);
-    final announcements = await _loadAnnouncements(holdings.take(5).toList());
-    final marketBase = await _loadMarket(fund, theme, holdings);
+    final tailSignalsFuture = _loadStockTailSignals(holdings);
+    final announcementsFuture = _loadAnnouncements(holdings.take(5).toList());
+    final marketBaseFuture = _loadMarket(fund, theme, holdings);
+    final smartMoneyFuture = _loadSmartMoneySignal(theme, holdings);
+    final tailSignals = await tailSignalsFuture;
+    final announcements = await announcementsFuture;
+    final marketBase = await marketBaseFuture;
+    final smartMoney = await smartMoneyFuture;
     final overnight = await overnightFuture;
     final northbound = await northboundFuture;
     final market = MarketSnapshot(
@@ -1396,7 +1395,7 @@ class FundService {
       overnight: overnight,
       northbound: northbound,
     );
-    final live = _analyze(fund, holdings, announcements, market, theme, realtime, intraday, tailSignals, settledItem, holdingSourceText);
+    final live = _analyze(fund, holdings, announcements, market, smartMoney, theme, realtime, intraday, tailSignals, settledItem, holdingSourceText);
     return _applyLocks(code, live);
   }
 
@@ -1712,14 +1711,14 @@ class FundService {
     );
     try {
       final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
-      if (response.statusCode != 200) return NorthboundSignal(summary: '北向数据等待刷新', score: 0);
+      if (response.statusCode != 200) return NorthboundSignal(summary: '北向资金今天暂时没有给出清晰方向。', score: 0);
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final data = payload['data'] as Map<String, dynamic>?;
       final sh = toNullableDouble((data?['hk2sh'] as Map<String, dynamic>?)?['dayNetAmtIn']);
       final sz = toNullableDouble((data?['hk2sz'] as Map<String, dynamic>?)?['dayNetAmtIn']);
       final total = (sh ?? 0) + (sz ?? 0);
       if ((sh == null && sz == null) || (!isTradingTime() && total == 0)) {
-        return NorthboundSignal(summary: '北向收盘后接口经常归零，当前按低权重处理', score: 0, shNet: sh, szNet: sz, totalNet: total);
+        return NorthboundSignal(summary: '收盘后北向参考价值会下降，先把重心放回盘中承接。', score: 0, shNet: sh, szNet: sz, totalNet: total);
       }
       var score = 0;
       if (total >= 2000000000) {
@@ -1736,7 +1735,7 @@ class FundService {
           : '北向今日${total >= 0 ? '净流入' : '净流出'} ${cnAmount(total.abs())}${score.abs() >= 2 ? '，方向比较坚决' : '，影响偏中等'}';
       return NorthboundSignal(summary: summary, score: score, shNet: sh, szNet: sz, totalNet: total);
     } catch (_) {
-      return NorthboundSignal(summary: '北向数据暂缺，先按低权重处理', score: 0);
+      return NorthboundSignal(summary: '北向资金暂时没有给出可参考的增量线索。', score: 0);
     }
   }
 
@@ -1775,6 +1774,7 @@ class FundService {
   Future<BoardSignal?> _loadThemeBoard(String theme) async {
     final keywords = themeKeywords(theme);
     if (keywords.isEmpty) return null;
+    final allRows = <String, Map<String, dynamic>>{};
     final candidates = <Map<String, dynamic>>[];
     for (final boardType in const ['2', '3']) {
       final uri = Uri.parse(
@@ -1785,7 +1785,11 @@ class FundService {
         if (response.statusCode != 200) continue;
         final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
         final data = payload['data'] as Map<String, dynamic>?;
-        final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>();
+        final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+        for (final row in rows) {
+          final code = (row['f12'] ?? '').toString();
+          if (code.isNotEmpty) allRows[code] = row;
+        }
         candidates.addAll(rows.where((row) => themeBoardScore((row['f14'] ?? '').toString(), keywords) > 0));
       } catch (_) {
         continue;
@@ -1799,6 +1803,10 @@ class FundService {
     });
     final best = candidates.first;
     final boardCode = (best['f12'] ?? '').toString();
+    final rankedRows = allRows.values.toList()..sort((a, b) => toDouble(b['f3']).compareTo(toDouble(a['f3'])));
+    final marketRank = boardCode.isEmpty ? null : rankedRows.indexWhere((row) => (row['f12'] ?? '').toString() == boardCode) + 1;
+    final marketCount = rankedRows.length;
+    final rpsPercentile = marketRank == null || marketCount <= 1 ? null : (100 - ((marketRank - 1) * 100 / (marketCount - 1))).clamp(0, 100).toDouble();
     final trendStats = boardCode.isEmpty ? null : await _loadBoardTrendStats('90.$boardCode');
     return BoardSignal(
       name: (best['f14'] ?? '$theme板块').toString(),
@@ -1814,6 +1822,9 @@ class FundService {
       first15ChangePct: trendStats?.first15ChangePct,
       first15VolumeRatio: trendStats?.first15VolumeRatio,
       tail20ChangePct: trendStats?.tail20ChangePct,
+      marketRank: marketRank == 0 ? null : marketRank,
+      marketCount: marketCount == 0 ? null : marketCount,
+      rpsPercentile: rpsPercentile,
     );
   }
 
@@ -1893,11 +1904,255 @@ class FundService {
     return all;
   }
 
+  Future<SmartMoneySignal> _loadSmartMoneySignal(String theme, List<StockHolding> holdings) async {
+    final focus = List<StockHolding>.from(holdings)..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
+    if (focus.isEmpty) {
+      return SmartMoneySignal(
+        summary: '暂时还没有拿到机构席位和事件层面的增量线索，先只看盘面承接。',
+        detail: '暂时还没有拿到机构席位和事件层面的增量线索，判断重心先回到板块资金、尾盘承接和量价变化。',
+        tone: 'warn',
+        score: 0,
+        evidenceCount: 0,
+      );
+    }
+
+    final dragonFuture = _loadDragonTigerFactor(focus.take(2).toList());
+    final blockFuture = _loadBlockTradeFactor(focus.take(2).toList());
+    final marginFuture = _loadMarginFactor(focus.take(3).toList());
+    final eventFuture = _loadEventCalendarFactor(theme);
+
+    final dragon = await dragonFuture;
+    final block = await blockFuture;
+    final margin = await marginFuture;
+    final event = await eventFuture;
+
+    final score = (dragon.score + block.score + margin.score + event.score).clamp(-3, 3).toInt();
+    final evidenceCount = dragon.hitCount + block.hitCount + margin.hitCount + event.hitCount;
+    final summary = score >= 2
+        ? '机构席位偏多，杠杆情绪没有明显过热，明天暂时看不到强扰动。'
+        : score <= -2
+            ? '聪明钱偏谨慎，杠杆和事件面都在提醒先把风控摆前面。'
+            : '聪明钱没有形成单边共识，明天更适合继续盯盘中承接。';
+    final detail = joinSentences([
+      dragon.text,
+      block.text,
+      margin.text,
+      event.text,
+    ]);
+    return SmartMoneySignal(
+      summary: summary,
+      detail: detail,
+      tone: toneFromScore(score.toDouble()),
+      score: score,
+      evidenceCount: evidenceCount,
+    );
+  }
+
+  Future<TextFactorSignal> _loadDragonTigerFactor(List<StockHolding> holdings) async {
+    final results = await Future.wait(holdings.map((holding) => _loadDragonTigerFactorForHolding(holding)));
+    final hits = results.where((item) => item.hitCount > 0).toList();
+    if (hits.isEmpty) {
+      return TextFactorSignal(text: '最近未见核心重仓股出现新的龙虎榜席位异动。', score: 0, hitCount: 0);
+    }
+    final score = hits.map((item) => item.score).sum.clamp(-2, 2).toInt();
+    return TextFactorSignal(
+      text: hits.take(2).map((item) => item.text).join('；'),
+      score: score,
+      hitCount: hits.length,
+    );
+  }
+
+  Future<TextFactorSignal> _loadDragonTigerFactorForHolding(StockHolding holding) async {
+    final uri = Uri.parse(
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=ALL&filter=(SECURITY_CODE%3D%22${holding.code}%22)&pageNumber=1&pageSize=1&sortTypes=-1&sortColumns=TRADE_DATE&source=WEB&client=WEB',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return TextFactorSignal(text: '', score: 0);
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final data = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+      final row = data.firstOrNull;
+      if (row == null) return TextFactorSignal(text: '', score: 0);
+      final tradeDate = parseDateFromText((row['TRADE_DATE'] ?? '').toString());
+      if (tradeDate == null || DateTime.now().difference(tradeDate).inDays > 60) return TextFactorSignal(text: '', score: 0);
+      final netAmt = toNullableDouble(row['BILLBOARD_NET_AMT']) ?? toNullableDouble(row['NET_BS_AMT']) ?? 0;
+      final explain = ((row['EXPLAIN'] ?? row['EXPLANATION'] ?? '').toString()).trim();
+      if (netAmt.abs() < 30000000 && !containsAnyKeyword(explain, const ['机构', '买一', '卖一'])) {
+        return TextFactorSignal(text: '', score: 0);
+      }
+      if (netAmt > 0 || containsAnyKeyword(explain, const ['机构买入', '买一主买'])) {
+        return TextFactorSignal(
+          text: '${holding.name}最近登上龙虎榜，席位净买入 ${cnAmount(netAmt.abs())}，说明机构还在回补。',
+          score: 1,
+          hitCount: 1,
+        );
+      }
+      if (netAmt < 0 || containsAnyKeyword(explain, const ['机构卖出', '卖一主卖'])) {
+        return TextFactorSignal(
+          text: '${holding.name}最近登上龙虎榜，但席位净卖出 ${cnAmount(netAmt.abs())}，短线抛压还没散。',
+          score: -1,
+          hitCount: 1,
+        );
+      }
+      return TextFactorSignal(text: '', score: 0);
+    } catch (_) {
+      return TextFactorSignal(text: '', score: 0);
+    }
+  }
+
+  Future<TextFactorSignal> _loadBlockTradeFactor(List<StockHolding> holdings) async {
+    final results = await Future.wait(holdings.map((holding) => _loadBlockTradeFactorForHolding(holding)));
+    final hits = results.where((item) => item.hitCount > 0).toList();
+    if (hits.isEmpty) {
+      return TextFactorSignal(text: '最近没有看到核心重仓股出现明显折价的大宗交易。', score: 0, hitCount: 0);
+    }
+    final score = hits.map((item) => item.score).sum.clamp(-2, 2).toInt();
+    return TextFactorSignal(
+      text: hits.take(2).map((item) => item.text).join('；'),
+      score: score,
+      hitCount: hits.length,
+    );
+  }
+
+  Future<TextFactorSignal> _loadBlockTradeFactorForHolding(StockHolding holding) async {
+    final uri = Uri.parse(
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DATA_BLOCKTRADE&columns=ALL&filter=(SECURITY_CODE%3D%22${holding.code}%22)&pageNumber=1&pageSize=1&sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return TextFactorSignal(text: '', score: 0);
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final data = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+      final row = data.firstOrNull;
+      if (row == null) return TextFactorSignal(text: '', score: 0);
+      final tradeDate = parseDateFromText((row['TRADE_DATE'] ?? '').toString());
+      if (tradeDate == null || DateTime.now().difference(tradeDate).inDays > 25) return TextFactorSignal(text: '', score: 0);
+      final discount = toNullableDouble(row['DISCOUNT_RATIO']) ?? -toDouble(row['PREMIUM_RATIO']);
+      final amount = toNullableDouble(row['DEAL_AMT']) ?? 0;
+      if (amount <= 0) return TextFactorSignal(text: '', score: 0);
+      if (discount <= -5) {
+        return TextFactorSignal(
+          text: '${holding.name}最近出现折价大宗交易 ${cnAmount(amount)}，说明高位仍有人先落袋。',
+          score: -1,
+          hitCount: 1,
+        );
+      }
+      if (discount >= 1) {
+        return TextFactorSignal(
+          text: '${holding.name}最近大宗交易没有出现折价，筹码承接还算稳。',
+          score: 1,
+          hitCount: 1,
+        );
+      }
+      return TextFactorSignal(text: '', score: 0);
+    } catch (_) {
+      return TextFactorSignal(text: '', score: 0);
+    }
+  }
+
+  Future<TextFactorSignal> _loadMarginFactor(List<StockHolding> holdings) async {
+    final results = await Future.wait(holdings.map((holding) => _loadMarginFactorForHolding(holding)));
+    final rows = results.where((item) => item.hitCount > 0).toList();
+    if (rows.isEmpty) {
+      return TextFactorSignal(text: '融资盘暂时没有看到新的极端升温信号。', score: 0, hitCount: 0);
+    }
+    final hotCount = rows.where((item) => item.score < 0).length;
+    final coolCount = rows.where((item) => item.score > 0).length;
+    if (hotCount >= 2) {
+      return TextFactorSignal(
+        text: '融资余额最近抬得太快，追高资金偏热，一旦冲高失败更容易出现踩踏。',
+        score: -1,
+        hitCount: 1,
+      );
+    }
+    if (coolCount >= 2) {
+      return TextFactorSignal(
+        text: '融资盘没有继续升温，杠杆追涨压力反而在降下来。',
+        score: 1,
+        hitCount: 1,
+      );
+    }
+    return TextFactorSignal(
+      text: hotCount == 1 ? '融资盘有升温苗头，但暂时还没到失控的程度。' : '融资盘整体中性，没有明显挤兑式杠杆风险。',
+      score: hotCount == 1 ? -1 : 0,
+      hitCount: 1,
+    );
+  }
+
+  Future<TextFactorSignal> _loadMarginFactorForHolding(StockHolding holding) async {
+    final uri = Uri.parse(
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_GGMX&columns=ALL&filter=(SCODE%3D%22${holding.code}%22)&pageNumber=1&pageSize=1&source=WEB&client=WEB',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return TextFactorSignal(text: '', score: 0);
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final data = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+      final row = data.firstOrNull;
+      if (row == null) return TextFactorSignal(text: '', score: 0);
+      final finGrowth = toNullableDouble(row['FIN_BALANCE_GR']) ?? 0;
+      final rzjme5d = toNullableDouble(row['RZJME5D']) ?? 0;
+      final changePct = toNullableDouble(row['ZDF']) ?? 0;
+      if (finGrowth >= 3 || (rzjme5d > 0 && changePct.abs() < 1.0)) {
+        return TextFactorSignal(text: holding.name, score: -1, hitCount: 1);
+      }
+      if (finGrowth <= -3 || rzjme5d < 0) {
+        return TextFactorSignal(text: holding.name, score: 1, hitCount: 1);
+      }
+      return TextFactorSignal(text: holding.name, score: 0, hitCount: 1);
+    } catch (_) {
+      return TextFactorSignal(text: '', score: 0);
+    }
+  }
+
+  Future<TextFactorSignal> _loadEventCalendarFactor(String theme) async {
+    final start = dateText(DateTime.now());
+    final uri = Uri.parse(
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_CPH_FECALENDAR&columns=ALL&filter=(START_DATE%3E%3D%27$start%27)&pageNumber=1&pageSize=40&sortTypes=1&sortColumns=START_DATE&source=WEB&client=WEB',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return TextFactorSignal(text: '未来两天暂未看到需要提前躲避的高影响事件。', score: 0, hitCount: 0);
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final rows = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+      final themeKeys = themeEventKeywords(theme);
+      final macroKeys = macroEventKeywords();
+      final relevant = <Map<String, dynamic>>[];
+      for (final row in rows) {
+        final title = ((row['FE_NAME'] ?? '').toString()).trim();
+        final content = ((row['CONTENT'] ?? '').toString()).trim();
+        final eventDate = parseDateFromText((row['START_DATE'] ?? '').toString());
+        if (title.isEmpty || eventDate == null) continue;
+        final days = DateTime(eventDate.year, eventDate.month, eventDate.day).difference(DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day)).inDays;
+        if (days < 0 || days > 2) continue;
+        if (containsAnyKeyword('$title $content', themeKeys) || containsAnyKeyword('$title $content', macroKeys)) {
+          relevant.add(row);
+        }
+      }
+      if (relevant.isEmpty) {
+        return TextFactorSignal(text: '未来两天暂未看到会立刻打断节奏的高影响事件。', score: 0, hitCount: 0);
+      }
+      final top = relevant.take(2).toList();
+      final titles = top.map((row) => (row['FE_NAME'] ?? '').toString().trim()).where((item) => item.isNotEmpty).join('、');
+      final firstDate = parseDateFromText((top.first['START_DATE'] ?? '').toString());
+      final whenText = describeEventWindow(firstDate);
+      final macroHeavy = top.any((row) => containsAnyKeyword('${row['FE_NAME'] ?? ''} ${row['CONTENT'] ?? ''}', macroKeys));
+      return TextFactorSignal(
+        text: '$whenText有 $titles，事件前夕资金更容易先观望，别把仓位打得太满。',
+        score: macroHeavy ? -2 : -1,
+        hitCount: 1,
+      );
+    } catch (_) {
+      return TextFactorSignal(text: '事件日历暂时没有给出新的强扰动线索。', score: 0, hitCount: 0);
+    }
+  }
+
   FundAnalysis _analyze(
     FundBase fund,
     List<StockHolding> holdings,
     List<Announcement> announcements,
     MarketSnapshot market,
+    SmartMoneySignal smartMoney,
     String theme,
     RealtimeEstimate? realtime,
     IntradaySeries intraday,
@@ -1932,10 +2187,20 @@ class FundService {
     final todayTone = buildTodayToneSignal(overnight: market.overnight, board: market.board, market: market);
     final ma5 = movingAverage(points, 5);
     final ma20 = movingAverage(points, 20);
+    final ma60 = movingAverage(points, 60);
+    final ma120 = movingAverage(points, 120);
     final bias5 = biasFromAverage(decisionNav, ma5);
     final bias20 = biasFromAverage(decisionNav, ma20);
     final biasScoreValue = biasScore(bias5, bias20);
     final biasText = biasStateText(bias5, bias20);
+    final resonance = buildResonanceSignal(
+      points: points,
+      decisionNav: decisionNav,
+      ma20: ma20,
+      ma60: ma60,
+      ma120: ma120,
+      market: market,
+    );
 
     var forward = buildForwardDecisionScore(board: market.board, tailSignals: tailSignals, todayPct: todayPct);
     if (majorNegative != null) {
@@ -1958,14 +2223,14 @@ class FundService {
             ? -1
             : 0;
     final marketBackdropText = market.averageChange >= 0.60
-        ? '大盘背景偏强，沪深主指数对情绪有加分'
+        ? '大盘整体偏强，板块如果同步走高，明天更容易延续。'
         : market.averageChange <= -0.60
-            ? '大盘背景偏弱，风险偏好被压制'
-            : '大盘背景中性，主要还是看主题与资金';
-    final northText = market.northbound?.summary ?? '北向数据等待刷新';
+            ? '大盘整体偏弱，局部热点就算有反抽，高度也容易被压住。'
+            : '大盘没有明显站队，明天更多还是看板块和资金自己说话。';
+    final northText = market.northbound?.summary ?? '北向资金今天没有给出明确方向。';
     final northScore = market.northbound?.score ?? 0;
 
-    var totalScore = forward.total + northScore + biasScoreValue + marketBackdropScore;
+    var totalScore = forward.total + northScore + biasScoreValue + marketBackdropScore + smartMoney.score + resonance.score;
     final duration = buildDurationSignal(
       points: points,
       decisionNav: decisionNav,
@@ -1981,13 +2246,15 @@ class FundService {
       market.board?.volumeRatio != null,
       tailSignals.where((row) => row.ready && row.changePct != null).length >= 2,
       market.northbound?.totalNet != null && ((market.northbound?.totalNet ?? 0) != 0 || isTradingTime()),
-      ma5 > 0 && ma20 > 0,
+      market.board?.rpsPercentile != null,
+      smartMoney.evidenceCount > 0,
+      ma5 > 0 && ma20 > 0 && ma60 > 0,
     ].where((item) => item).length;
     var confidence = majorNegative != null
         ? '低'
-        : availableTomorrowSignals >= 5
+        : availableTomorrowSignals >= 6
             ? '中'
-            : availableTomorrowSignals >= 3
+            : availableTomorrowSignals >= 4
                 ? '中低'
                 : '低';
     final conflictCount = [
@@ -1996,43 +2263,63 @@ class FundService {
       duration.tone == 'bad' && totalScore > 0,
       duration.tone == 'good' && totalScore < 0,
       forward.volumeScore < 0 && (forward.fundFlowScore > 0 || forward.tailScore > 0),
+      smartMoney.score != 0 && forward.fundFlowScore != 0 && smartMoney.score.sign != forward.fundFlowScore.sign,
+      resonance.score != 0 && forward.total != 0 && resonance.score.sign != forward.total.sign,
     ].where((item) => item).length;
     if (conflictCount >= 2) confidence = '极低';
 
-    final sectorState = '${forward.fundFlowText}；$marketBackdropText';
+    final sectorState = joinSentences([forward.fundFlowText, marketBackdropText]);
     final tailState = forward.tailText;
-    final volumeState = '${forward.volumeText}；$northText';
+    final smartMoneyState = smartMoney.summary;
+    final volumeState = joinSentences([forward.volumeText, northText]);
+    final resonanceState = resonance.summary;
     final probabilityUp = (50 + totalScore * 6).clamp(10.0, 90.0).toDouble();
     final todayState = todayTone.state;
-    var tomorrowTrend = totalScore >= 5
-        ? '大概率偏强'
+    var tomorrowTrend = totalScore >= 6
+        ? '延续偏强的概率较高'
         : totalScore >= 2
-            ? '震荡偏强'
-            : totalScore <= -5
-                ? '回调风险高'
+            ? '偏强震荡'
+            : totalScore <= -6
+                ? '回落压力偏大'
                 : totalScore <= -2
-                    ? '震荡偏弱'
-                    : '震荡观察';
+                    ? '偏弱震荡'
+                    : '方向还不够清晰';
     final valuationBackground = valuationText(drawdown: drawdown, last20: last20);
     final amountLevel = item.amount >= 30000
         ? '仓位偏重'
         : item.amount >= 10000
             ? '中等仓位'
             : '轻仓';
+    final atr14 = resonance.atr14;
+    final buyCap = atr14 >= 2.6
+        ? 0.05
+        : atr14 >= 1.8
+            ? 0.08
+            : 0.10;
+    final sellCap = atr14 >= 2.6
+        ? 0.15
+        : atr14 >= 1.8
+            ? 0.12
+            : 0.10;
+    final riskBudgetText = atr14 >= 2.6
+        ? '这只基金波动偏大，单次动作要压小。'
+        : atr14 <= 1.2
+            ? '这只基金最近波动温和，可以继续按计划分批。'
+            : '这只基金波动中等，继续按小步分批处理更稳。';
 
     var buyRatio = 0.0;
     var sellRatio = 0.0;
     var action = shouldLockTomorrowPrediction(DateTime.now()) ? '不动，等确认' : '等待14:45确认';
-    if (totalScore <= -5 || duration.tone == 'bad' && (bias20 > 5 || majorNegative != null)) {
+    if (totalScore <= -5 || duration.tone == 'bad' && (bias20 > 5 || majorNegative != null || resonance.score < 0)) {
       action = amountLevel == '仓位偏重' ? '减仓锁定' : '观望，不追高';
       sellRatio = item.amount >= 10000 ? 0.10 : 0.06;
-    } else if (totalScore >= 5 && duration.tone != 'bad') {
+    } else if (totalScore >= 5 && duration.tone != 'bad' && resonance.score >= 0) {
       action = '14:50分批买入';
       buyRatio = confidence.startsWith('中') ? 0.10 : 0.06;
     } else if (totalScore <= -2) {
       action = '观望，防回落';
       if (amountLevel == '仓位偏重') sellRatio = 0.05;
-    } else if (totalScore >= 2 && duration.tone == 'good') {
+    } else if (totalScore >= 2 && duration.tone == 'good' && smartMoney.score >= 0) {
       action = '轻仓可试探';
       buyRatio = confidence.startsWith('中') ? 0.04 : 0.02;
     }
@@ -2045,32 +2332,36 @@ class FundService {
       buyRatio = 0.0;
       sellRatio = 0.0;
       tomorrowTrend = '多空分歧大，方向不明';
-      action = '观望，等待更清晰信号';
+      action = '观望，切勿盲动';
     }
     if (amountLevel == '仓位偏重' && totalScore < 0) {
       sellRatio = max(sellRatio, 0.05);
       buyRatio = min(buyRatio, 0.03);
       if (sellRatio > 0) action = '仓位重可小幅减';
     }
+    if (smartMoney.score < 0) buyRatio = min(buyRatio, 0.04);
+    if (resonance.score < 0) buyRatio = min(buyRatio, 0.03);
     if (duration.tone == 'bad') buyRatio = min(buyRatio, 0.04);
     if (isLiquor && confidence == '低') buyRatio = min(buyRatio, 0.03);
-    buyRatio = buyRatio.clamp(0.0, 0.20).toDouble();
-    sellRatio = sellRatio.clamp(0.0, 0.30).toDouble();
+    buyRatio = buyRatio.clamp(0.0, buyCap).toDouble();
+    sellRatio = sellRatio.clamp(0.0, sellCap).toDouble();
 
     final macroScore = ((market.overnight?.score ?? 0) + marketBackdropScore).toDouble();
     final sectorTone = toneFromScore((forward.fundFlowScore + marketBackdropScore).toDouble());
     final coreTone = toneFromScore((forward.tailScore + biasScoreValue).toDouble());
     final volumeTone = toneFromScore((forward.volumeScore + northScore).toDouble());
+    final smartMoneyTone = smartMoney.tone;
+    final resonanceTone = resonance.tone;
     final decisionSummary = buyRatio == 0 && sellRatio == 0
-        ? '今天以观望为主，先等更清晰的盘面信号。'
+        ? '今天先观望，等更明确的止跌或放量信号。'
         : buyRatio > 0 && sellRatio == 0
-            ? '今天更适合小额分批买入。'
-            : sellRatio > 0 && buyRatio == 0
-                ? '今天更适合先降一小部分仓位。'
-                : '今天以控仓为主，买卖都只做小幅调整。';
+            ? '今天更适合小额试探，不适合一把追进去。'
+        : sellRatio > 0 && buyRatio == 0
+            ? '今天更适合先降一小部分仓位，把回撤风险压住。'
+            : '今天以控仓为主，买卖都只做小幅调整。';
     final amountRule = buyRatio == 0 && sellRatio == 0
-        ? '$amountLevel，当前持有金额 ${money(item.amount)}，今天先不触发买卖。'
-        : '$amountLevel，当前持有金额 ${money(item.amount)}；计划买入 ${money(item.amount * buyRatio)}，计划卖出 ${money(item.amount * sellRatio)}。';
+        ? '$amountLevel，当前持有金额 ${money(item.amount)}，今天先不触发买卖。$riskBudgetText'
+        : '$amountLevel，当前持有金额 ${money(item.amount)}；计划买入 ${money(item.amount * buyRatio)}，计划卖出 ${money(item.amount * sellRatio)}。$riskBudgetText';
     final decision = DecisionModel(
       confidence: confidence == '中'
           ? '置信度：中'
@@ -2079,15 +2370,19 @@ class FundService {
               : confidence == '极低'
                   ? '置信度：极低'
                   : '置信度：低',
-      macroState: '${market.overnight?.summary ?? '隔夜外围等待刷新。'}$marketBackdropText',
+      macroState: joinSentences([market.overnight?.summary ?? '隔夜外围消息偏平。', marketBackdropText]),
       macroTone: toneFromScore(macroScore),
       valuationState: sectorState,
       valuationTone: sectorTone,
-      trendState: '$tailState；$biasText',
+      trendState: tailState,
       trendTone: coreTone,
+      smartMoneyState: smartMoneyState,
+      smartMoneyTone: smartMoneyTone,
       costDeviationText: volumeState,
       deviationTone: volumeTone,
-      durationState: '${duration.summary}；${duration.reason}',
+      resonanceState: resonanceState,
+      resonanceTone: resonanceTone,
+      durationState: '${duration.summary}。${duration.reason}',
       durationTone: duration.tone,
       gridTrigger: amountRule,
       summary: decisionSummary,
@@ -2097,16 +2392,56 @@ class FundService {
     final todayReason =
         '${todayTone.reason}${useOfficialValue ? ' 晚上已切换为实际净值 ${last.value.toStringAsFixed(4)}。' : hasFundRealtime ? ' 当前盘中估值 ${pct(todayPct)}，更新时间 ${realtime!.updateTime}。' : ' 当前盘中估值暂缺，用净值与重仓映射近似。'}';
     final actionReason = confidence == '极低'
-        ? '今天的资金、量能和大盘信号互相打架，多空分歧很大。现在强行下注很容易被来回甩，先观望，等明天方向更清晰再说。'
-        : '今天的开盘基调定为 $todayState，09:45 后保持不变。$sectorState。$tailState。$volumeState。预计明天 $tomorrowTrend，本轮更像 ${duration.summary}。${buyRatio > 0 ? '建议 14:50 分批买入。' : sellRatio > 0 ? '建议 14:50 小幅卖出。' : '建议先不动作。'}${isLiquor ? ' 白酒额外还要看消费预期、估值和龙头公告。' : ''}${majorNegative != null ? ' 重大负面公告会继续压制短线情绪。' : ''}';
+        ? '今天的资金面、量能和大盘方向互相打架，多空都没形成压倒性优势。这个时候最怕的不是错过，而是被来回甩，所以先观望，等信号重新站到一边再说。'
+        : joinSentences([
+            '今天的开盘基调在 09:45 定为 $todayState，之后不再改写。',
+            sectorState,
+            tailState,
+            smartMoney.detail,
+            resonance.detail,
+            volumeState,
+            '综合看，预计明天 $tomorrowTrend，本轮更像 ${duration.summary}。',
+            buyRatio > 0
+                ? '所以更适合在 14:50 前后小额分批买入，不适合一把追进去。'
+                : sellRatio > 0
+                    ? '所以更适合先降一点仓位，把回撤风险锁住。'
+                    : '所以今天先别急着动，耐心等更明确的止跌或放量确认。',
+            if (isLiquor) '白酒还要额外看消费预期、估值位置和龙头公告的情绪变化。',
+            if (majorNegative != null) '重大负面公告还会继续压制短线情绪。',
+          ]);
 
     final supportText = biasScoreValue > 0 || duration.tone == 'good' ? '当前估值更靠近支撑和均线修复区。' : '当前位置没有明显超跌优势。';
     final overheatText = duration.tone == 'bad' ? '短线已经有过热迹象。' : '短线还没有进入极端过热区。';
     final buyReason = buyRatio > 0
-        ? '$supportText $sectorState。$tailState。$volumeState。预判明天 $tomorrowTrend，本轮更像 ${duration.summary}。按当前持有金额先试探 ${ratioText(buyRatio)}，约 ${money(item.amount * buyRatio)}。'
-        : '当前不适合买入。$sectorState。$tailState。$biasText。先等 14:45 之后再看方向是否更清晰。';
+        ? joinSentences([
+            supportText,
+            sectorState,
+            tailState,
+            smartMoney.detail,
+            resonance.detail,
+            volumeState,
+            '预判明天 $tomorrowTrend，本轮更像 ${duration.summary}。',
+            '按当前持有金额先试探 ${ratioText(buyRatio)}，约 ${money(item.amount * buyRatio)}。',
+          ])
+        : joinSentences([
+            '当前不适合买入。',
+            sectorState,
+            tailState,
+            smartMoney.summary,
+            resonance.summary,
+            biasText,
+            '先等 14:45 之后再看方向是否更清晰。',
+          ]);
     final sellReason = sellRatio > 0
-        ? '$overheatText${majorNegative != null ? ' 叠加重大负面公告。' : ''} $volumeState。$biasText。预判明天 $tomorrowTrend，先降一小部分风险，建议按当前持仓卖出 ${ratioText(sellRatio)}，约 ${money(item.amount * sellRatio)}。'
+        ? joinSentences([
+            overheatText,
+            if (majorNegative != null) '叠加重大负面公告。',
+            smartMoney.detail,
+            resonance.detail,
+            volumeState,
+            biasText,
+            '预判明天 $tomorrowTrend，先降一小部分风险，建议按当前持仓卖出 ${ratioText(sellRatio)}，约 ${money(item.amount * sellRatio)}。',
+          ])
         : '当前还没到必须卖的时候。若仓位不重，短线波动不建议直接砍掉；更适合继续观察明天的资金承接。';
 
     return FundAnalysis(
@@ -2479,6 +2814,50 @@ class DurationSignal {
   final double resistanceGapPct;
 }
 
+class TextFactorSignal {
+  TextFactorSignal({
+    required this.text,
+    required this.score,
+    this.hitCount = 0,
+  });
+
+  final String text;
+  final int score;
+  final int hitCount;
+}
+
+class SmartMoneySignal {
+  SmartMoneySignal({
+    required this.summary,
+    required this.detail,
+    required this.tone,
+    required this.score,
+    required this.evidenceCount,
+  });
+
+  final String summary;
+  final String detail;
+  final String tone;
+  final int score;
+  final int evidenceCount;
+}
+
+class ResonanceSignal {
+  ResonanceSignal({
+    required this.summary,
+    required this.detail,
+    required this.tone,
+    required this.score,
+    required this.atr14,
+  });
+
+  final String summary;
+  final String detail;
+  final String tone;
+  final int score;
+  final double atr14;
+}
+
 class StockHolding {
   StockHolding({
     required this.code,
@@ -2567,6 +2946,9 @@ class BoardSignal {
     this.first15ChangePct,
     this.first15VolumeRatio,
     this.tail20ChangePct,
+    this.marketRank,
+    this.marketCount,
+    this.rpsPercentile,
   });
 
   final String name;
@@ -2582,6 +2964,9 @@ class BoardSignal {
   final double? first15ChangePct;
   final double? first15VolumeRatio;
   final double? tail20ChangePct;
+  final int? marketRank;
+  final int? marketCount;
+  final double? rpsPercentile;
 }
 
 class MarketSnapshot {
@@ -2633,8 +3018,12 @@ class DecisionModel {
     required this.valuationTone,
     required this.trendState,
     required this.trendTone,
+    required this.smartMoneyState,
+    required this.smartMoneyTone,
     required this.costDeviationText,
     required this.deviationTone,
+    required this.resonanceState,
+    required this.resonanceTone,
     required this.durationState,
     required this.durationTone,
     required this.gridTrigger,
@@ -2649,8 +3038,12 @@ class DecisionModel {
   final String valuationTone;
   final String trendState;
   final String trendTone;
+  final String smartMoneyState;
+  final String smartMoneyTone;
   final String costDeviationText;
   final String deviationTone;
+  final String resonanceState;
+  final String resonanceTone;
   final String durationState;
   final String durationTone;
   final String gridTrigger;
@@ -2665,8 +3058,12 @@ class DecisionModel {
         'valuationTone': valuationTone,
         'trendState': trendState,
         'trendTone': trendTone,
+        'smartMoneyState': smartMoneyState,
+        'smartMoneyTone': smartMoneyTone,
         'costDeviationText': costDeviationText,
         'deviationTone': deviationTone,
+        'resonanceState': resonanceState,
+        'resonanceTone': resonanceTone,
         'durationState': durationState,
         'durationTone': durationTone,
         'gridTrigger': gridTrigger,
@@ -2682,8 +3079,12 @@ class DecisionModel {
         valuationTone: (json['valuationTone'] ?? 'warn').toString(),
         trendState: (json['trendState'] ?? '').toString(),
         trendTone: (json['trendTone'] ?? 'warn').toString(),
+        smartMoneyState: (json['smartMoneyState'] ?? '').toString(),
+        smartMoneyTone: (json['smartMoneyTone'] ?? 'warn').toString(),
         costDeviationText: (json['costDeviationText'] ?? '').toString(),
         deviationTone: (json['deviationTone'] ?? 'warn').toString(),
+        resonanceState: (json['resonanceState'] ?? '').toString(),
+        resonanceTone: (json['resonanceTone'] ?? 'warn').toString(),
         durationState: (json['durationState'] ?? '').toString(),
         durationTone: (json['durationTone'] ?? 'warn').toString(),
         gridTrigger: (json['gridTrigger'] ?? '').toString(),
@@ -3401,6 +3802,57 @@ List<String> themeKeywords(String theme) {
   return const [];
 }
 
+List<String> themeEventKeywords(String theme) {
+  if (theme.contains('电池')) return const ['电池', '锂', '储能', '新能源车', '车展', '碳酸锂', '比亚迪', '宁德时代'];
+  if (theme.contains('新能源')) return const ['新能源', '光伏', '储能', '车展', '锂', '硅料'];
+  if (theme.contains('半导体')) return const ['半导体', '芯片', '晶圆', '台积电', '苹果发布会', '英伟达'];
+  if (theme.contains('白酒')) return const ['白酒', '消费', '食品饮料', '中秋', '国庆'];
+  if (theme.contains('医药')) return const ['医药', '创新药', '医保', '集采', '医疗器械'];
+  return const [];
+}
+
+List<String> macroEventKeywords() => const [
+      'PMI',
+      '非农',
+      'CPI',
+      'PPI',
+      '社融',
+      '利率',
+      '议息',
+      '美联储',
+      '央行',
+      '国常会',
+      '财报',
+      '就业',
+      '关税',
+      '汇率',
+    ];
+
+bool containsAnyKeyword(String text, List<String> keywords) {
+  if (text.isEmpty || keywords.isEmpty) return false;
+  final upper = text.toUpperCase();
+  return keywords.any((keyword) => text.contains(keyword) || upper.contains(keyword.toUpperCase()));
+}
+
+String describeEventWindow(DateTime? date) {
+  if (date == null) return '近期';
+  final now = DateTime.now();
+  final delta = DateTime(date.year, date.month, date.day).difference(DateTime(now.year, now.month, now.day)).inDays;
+  if (delta <= 0) return '今天';
+  if (delta == 1) return '明天';
+  return '未来两天';
+}
+
+String joinSentences(List<String?> parts) {
+  final cleaned = parts
+      .whereType<String>()
+      .map((item) => item.trim())
+      .where((item) => item.isNotEmpty)
+      .map((item) => item.endsWith('。') || item.endsWith('！') || item.endsWith('？') ? item : '$item。')
+      .toList();
+  return cleaned.join(' ');
+}
+
 int themeBoardScore(String name, List<String> keywords) {
   var score = 0;
   for (final keyword in keywords) {
@@ -3474,10 +3926,12 @@ ForwardDecisionScore buildForwardDecisionScore({
   if (flow != null && flow < -1000000000) fundFlowScore = -2;
 
   final fundFlowText = board == null
-      ? '板块资金仍在等待实时刷新'
+      ? '板块主力资金还在刷新，先不做强判断。'
       : flow == null
-          ? '${board.name}${pct(board.changePct)}，主力资金流向还在确认'
-          : '${flow >= 0 ? '净流入' : '净流出'} ${cnAmount(flow.abs())}（${board.name}${pct(board.changePct)}）';
+          ? '${board.name}${pct(board.changePct)}，板块在动，但主力方向还不够清晰。'
+          : flow >= 0
+              ? '主力净流入 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，承接还在。'
+              : '主力净流出 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，抛压偏重。';
 
   final readyTails = tailSignals.where((item) => item.ready && item.changePct != null).toList();
   final tailUpCount = readyTails.where((item) => item.changePct! > 1).length;
@@ -3491,10 +3945,10 @@ ForwardDecisionScore buildForwardDecisionScore({
   final tailText = readyTails.isEmpty
       ? tailSummary
       : tailUpCount >= 2
-          ? '$tailSummary，尾盘有明显抢筹'
+          ? '$tailSummary，尾盘出现合力抢筹。'
           : tailDownCount >= 2
-              ? '$tailSummary，尾盘抛压偏重'
-              : '$tailSummary，尾盘没有形成一致方向';
+              ? '$tailSummary，尾盘抛压偏重。'
+              : '$tailSummary，尾盘走势分化，还没形成一致方向。';
 
   final ratio = board?.volumeRatio;
   var volumeScoreValue = 0;
@@ -3503,12 +3957,12 @@ ForwardDecisionScore buildForwardDecisionScore({
   if (ratio != null && todayPct < -0.15 && ratio >= 1.05) volumeScoreValue = -1;
   if (ratio != null && todayPct < -0.15 && ratio < 0.95) volumeScoreValue = 1;
   final volumeLabel = ratio == null
-      ? '量价关系还在等待刷新'
+      ? '量价关系还在刷新，先看盘中承接。'
       : todayPct > 0.15
-          ? '${ratio >= 1.05 ? '放量上涨' : ratio < 0.95 ? '缩量上涨' : '平量上涨'}，成交额约为昨日同段 ${(ratio * 100).toStringAsFixed(0)}%'
+          ? '${ratio >= 1.05 ? '放量上涨，跟随资金更积极' : ratio < 0.95 ? '缩量上涨，追价意愿偏弱' : '平量上涨，强度还算中性'}。'
           : todayPct < -0.15
-              ? '${ratio >= 1.05 ? '放量回落' : ratio < 0.95 ? '缩量回落' : '平量回落'}，成交额约为昨日同段 ${(ratio * 100).toStringAsFixed(0)}%'
-              : '量能约为昨日同段 ${(ratio * 100).toStringAsFixed(0)}%，方向还不够明确';
+              ? '${ratio >= 1.05 ? '放量回落，抛压释放得更彻底' : ratio < 0.95 ? '缩量回落，下方承接还在试探' : '平量回落，情绪暂时偏谨慎'}。'
+              : '量能和昨天同段差不多，方向还不够明确。';
 
   final total = fundFlowScore + tailScore + volumeScoreValue;
   final conclusion = total >= 3
@@ -3959,6 +4413,79 @@ TodayToneSignal buildTodayToneSignal({
   return TodayToneSignal(state: state, confidence: confidence, reason: reason, score: score);
 }
 
+ResonanceSignal buildResonanceSignal({
+  required List<NavPoint> points,
+  required double decisionNav,
+  required double ma20,
+  required double ma60,
+  required double ma120,
+  required MarketSnapshot market,
+}) {
+  final board = market.board;
+  final atr14 = atrProxy(points, 14);
+  var score = 0;
+  final notes = <String>[];
+
+  final boardStrength = board?.rpsPercentile;
+  if (boardStrength != null) {
+    if (boardStrength >= 90) {
+      score += 2;
+      notes.add('${board!.name}当前强度位于全市场前 10%，仍然算主线方向');
+    } else if (boardStrength >= 75) {
+      score += 1;
+      notes.add('${board!.name}当前强度位于全市场前四分之一，延续性还可以');
+    } else if (boardStrength < 50) {
+      score -= 1;
+      notes.add('${board!.name}当前强度落在市场后半区，反弹持续性一般');
+    }
+  }
+
+  if (market.averageChange >= 0.60 && (board?.changePct ?? 0) > 0.2) {
+    score += 1;
+    notes.add('大盘和板块方向一致，顺风时更容易把反弹做出来');
+  } else if (market.averageChange <= -0.60 && (board?.changePct ?? 0) > 0.1) {
+    score -= 1;
+    notes.add('板块虽然局部活跃，但大盘偏弱，会压住明天的反弹高度');
+  } else if (market.averageChange <= -0.60) {
+    score -= 1;
+    notes.add('大盘环境偏弱，任何反弹都要先防冲高回落');
+  }
+
+  final gapTo60 = ma60 > 0 ? (ma60 / decisionNav - 1) * 100 : 99.0;
+  final gapTo120 = ma120 > 0 ? (ma120 / decisionNav - 1) * 100 : 99.0;
+  if (ma60 > 0 && decisionNav < ma60 && gapTo60 <= 1.2) {
+    score -= 1;
+    notes.add('当前位置已经贴近 60 日线压力，明天更容易先遇到抛压');
+  } else if (ma120 > 0 && decisionNav < ma120 && gapTo120 <= 1.5) {
+    score -= 1;
+    notes.add('半年线附近还有一层阻力，向上空间不宜看太满');
+  } else if (ma20 > 0 && ma60 > 0 && decisionNav > ma20 && decisionNav > ma60 && (ma120 <= 0 || decisionNav > ma120)) {
+    score += 1;
+    notes.add('已经重新站上中期均线，趋势修复更完整');
+  }
+
+  if (atr14 >= 2.6) {
+    notes.add('最近波动偏大，单次仓位要压小');
+  } else if (atr14 <= 1.2) {
+    notes.add('最近波动温和，分批操作的容错会更高');
+  } else {
+    notes.add('最近波动中等，继续小步分批更稳');
+  }
+
+  final summary = score >= 2
+      ? '大盘、板块和均线共振偏正，明天更容易延续强势。'
+      : score <= -2
+          ? '共振条件偏弱，明天更要提防冲高回落或继续承压。'
+          : '共振信号一般，方向还要靠明天盘中资金再确认。';
+  return ResonanceSignal(
+    summary: summary,
+    detail: joinSentences(notes),
+    tone: toneFromScore(score.toDouble()),
+    score: score,
+    atr14: atr14,
+  );
+}
+
 DurationSignal buildDurationSignal({
   required List<NavPoint> points,
   required double decisionNav,
@@ -4068,6 +4595,12 @@ List<double> dailyReturns(List<NavPoint> points) {
 }
 
 List<double> recentReturns(List<NavPoint> points, int days) => dailyReturns(points).takeLast(days);
+
+double atrProxy(List<NavPoint> points, int period) {
+  final sample = dailyReturns(points).map((item) => item.abs()).takeLast(period).toList();
+  if (sample.isEmpty) return 0;
+  return sample.averageOrZero;
+}
 
 double std(List<double> values) {
   if (values.length < 2) return 0;
