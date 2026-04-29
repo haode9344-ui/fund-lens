@@ -567,6 +567,49 @@ class _FundDetailPageState extends State<FundDetailPage> {
     }
   }
 
+  Future<void> _quickRecordBuy(double amount) async {
+    if (amount <= 0) return;
+    final updated = _item.addPendingBuy(amount);
+    final fresh = await widget.onUpdateItem(updated);
+    if (mounted) {
+      setState(() {
+        _analysis = fresh;
+        _item = fresh.settledItem;
+      });
+      final plan = pendingOrderPlan(DateTime.now());
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已记录买入 ${money(amount)}，按${plan.label}规则在 ${plan.confirmDate} 确认份额。')),
+      );
+    }
+  }
+
+  Future<void> _quickRecordSell(double amount) async {
+    if (amount <= 0) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认记录卖出'),
+        content: Text('这次将按当前持仓直接记录卖出 ${money(amount)}，并同步扣减本地持仓金额。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('确认卖出')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final updated = _item.recordSell(amount, latestNav: _analysis.latestValue);
+    final fresh = await widget.onUpdateItem(updated);
+    if (mounted) {
+      setState(() {
+        _analysis = fresh;
+        _item = fresh.settledItem;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已记录卖出 ${money(amount)}，持仓金额已同步更新。')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentValue = positionValue(_item);
@@ -576,7 +619,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
     final hasOperation = buyAmount > 0.01 || sellAmount > 0.01;
     final showBuyReason = buyAmount > 0.01;
     final showSellReason = sellAmount > 0.01;
-    final emphasizeBuy = showBuyReason && !showSellReason;
+    final canFollowBuy = showBuyReason && !showSellReason;
+    final canFollowSell = showSellReason && !showBuyReason;
     return Scaffold(
       appBar: AppBar(
         title: const Text('基金分析', style: TextStyle(fontWeight: FontWeight.w900)),
@@ -649,7 +693,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                     const SizedBox(height: 12),
                     PendingBuySummary(item: _item),
                   ],
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   FeeWindowSummaryCard(item: _analysis.settledItem, latestNav: _analysis.latestValue),
                 ],
               ),
@@ -670,7 +714,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                       const Expanded(
                         child: Text('今天怎么做', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
                       ),
-                      if (!emphasizeBuy)
+                      if (!canFollowBuy && !canFollowSell)
                         TextButton.icon(
                           onPressed: _addPendingBuy,
                           style: TextButton.styleFrom(
@@ -686,12 +730,12 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   ),
                   const SizedBox(height: 12),
                   Text(_analysis.action, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
-                  if (emphasizeBuy) ...[
+                  if (canFollowBuy) ...[
                     const SizedBox(height: 12),
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
-                        onPressed: _addPendingBuy,
+                        onPressed: () => _quickRecordBuy(buyAmount),
                         style: FilledButton.styleFrom(
                           backgroundColor: AppColors.blue,
                           foregroundColor: Colors.white,
@@ -699,9 +743,30 @@ class _FundDetailPageState extends State<FundDetailPage> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                         ),
                         icon: const Icon(CupertinoIcons.plus_circle),
-                        label: const Text('加仓'),
+                        label: Text('一键记录买入 ${money(buyAmount)}'),
                       ),
-                    )
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '会按当前时间自动判断为 15 点前或 15 点后买入。',
+                      style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w700),
+                    ),
+                  ] else if (canFollowSell) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () => _quickRecordSell(sellAmount),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.green,
+                          side: const BorderSide(color: Color(0xFF9FD5AA)),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        icon: const Icon(CupertinoIcons.arrow_up_right_circle),
+                        label: Text('一键记录卖出 ${money(sellAmount)}'),
+                      ),
+                    ),
                   ],
                   const SizedBox(height: 12),
                   if (hasOperation)
@@ -714,8 +779,6 @@ class _FundDetailPageState extends State<FundDetailPage> {
                     )
                   else
                     const Text('今日没有触发买卖动作，先观望，等更清晰的盘面信号。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 10),
-                  Text(_analysis.actionReason, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
                   if (showBuyReason) ...[
                     const SizedBox(height: 12),
                     ReasonBox(title: '为什么适合买入', text: _analysis.buyReason, color: AppColors.red),
@@ -729,6 +792,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
             ),
             const SizedBox(height: 12),
             DecisionModelCard(decision: _analysis.decision),
+            const SizedBox(height: 12),
+            GridBattlePlanCard(plan: _analysis.battlePlan),
             const SizedBox(height: 12),
             if (_analysis.liquorSpecial != null) ...[
               CardShell(
@@ -1088,62 +1153,45 @@ class FeeWindowSummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final snapshot = buildFeeWindowSnapshot(item, latestNav);
     final tone = snapshot.tone;
-    final borderColor = tone == 'good'
-        ? const Color(0xFFB9E7C8)
-        : tone == 'bad'
-            ? const Color(0xFFFFCFC6)
-            : const Color(0xFFE7D79C);
-    final bgColor = tone == 'good'
-        ? const Color(0xFFF2FBF5)
-        : tone == 'bad'
-            ? const Color(0xFFFFF5F2)
-            : const Color(0xFFFFFAEE);
     final icon = tone == 'good'
         ? CupertinoIcons.check_mark_circled_solid
         : tone == 'bad'
             ? CupertinoIcons.exclamationmark_triangle_fill
-            : CupertinoIcons.shield_lefthalf_fill;
-    final progressColor = tone == 'good'
+            : CupertinoIcons.info_circle;
+    final textColor = tone == 'good'
         ? const Color(0xFF2EB45F)
         : tone == 'bad'
             ? AppColors.green
-            : const Color(0xFFD8A019);
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: borderColor),
-      ),
+            : AppColors.muted;
+    final detail = tone == 'warn' ? '' : snapshot.detail;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 18, color: progressColor),
-              const SizedBox(width: 8),
-              Expanded(child: Text(snapshot.headline, style: const TextStyle(fontWeight: FontWeight.w900, height: 1.35))),
+              Icon(icon, size: 14, color: textColor),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  snapshot.headline,
+                  style: TextStyle(
+                    color: textColor,
+                    fontSize: 12,
+                    height: 1.35,
+                    fontWeight: tone == 'warn' ? FontWeight.w700 : FontWeight.w800,
+                  ),
+                ),
+              ),
             ],
           ),
-          if (snapshot.progress != null) ...[
-            const SizedBox(height: 10),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                minHeight: 8,
-                value: snapshot.progress!.clamp(0.0, 1.0),
-                backgroundColor: AppColors.softGrey,
-                valueColor: AlwaysStoppedAnimation<Color>(progressColor),
-              ),
-            ),
-          ],
-          if (snapshot.detail.isNotEmpty) ...[
-            const SizedBox(height: 8),
+          if (detail.isNotEmpty) ...[
+            const SizedBox(height: 4),
             Text(
-              snapshot.detail,
-              style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.45, fontWeight: FontWeight.w700),
+              detail,
+              style: const TextStyle(color: AppColors.muted, fontSize: 11, height: 1.4, fontWeight: FontWeight.w700),
             ),
           ],
         ],
@@ -1566,6 +1614,67 @@ class YesterdayReviewCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class GridBattlePlanCard extends StatelessWidget {
+  const GridBattlePlanCard({super.key, required this.plan});
+
+  final GridBattlePlan plan;
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('持仓网格战区图', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          _BattleRow(icon: CupertinoIcons.arrow_up_circle_fill, color: AppColors.green, label: '向上压力位', value: plan.upperTrigger, note: plan.upperAction),
+          const SizedBox(height: 10),
+          _BattleRow(icon: CupertinoIcons.scope, color: AppColors.blue, label: '当前净值', value: plan.currentValue, note: plan.currentZone),
+          const SizedBox(height: 10),
+          _BattleRow(icon: CupertinoIcons.arrow_down_circle_fill, color: AppColors.red, label: '向下支撑位', value: plan.lowerTrigger, note: plan.lowerAction),
+        ],
+      ),
+    );
+  }
+}
+
+class _BattleRow extends StatelessWidget {
+  const _BattleRow({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.value,
+    required this.note,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String label;
+  final String value;
+  final String note;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('$label：$value', style: const TextStyle(fontWeight: FontWeight.w900)),
+              const SizedBox(height: 4),
+              Text(note, style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w700)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -2747,6 +2856,8 @@ class FundService {
     final ma20 = movingAverage(points, 20);
     final ma60 = movingAverage(points, 60);
     final ma120 = movingAverage(points, 120);
+    final recentSupport = points.takeLast(min(20, points.length)).map((item) => item.value).reduce(min).toDouble();
+    final recentResistance = points.takeLast(min(60, points.length)).map((item) => item.value).reduce(max).toDouble();
     final bias5 = biasFromAverage(decisionNav, ma5);
     final bias20 = biasFromAverage(decisionNav, ma20);
     final biasScoreValue = biasScore(bias5, bias20);
@@ -3098,6 +3209,20 @@ class FundService {
                 ? '操作建议：更适合先降一点仓位，把已经暴露出来的回撤风险压住。'
                 : '操作建议：今天先不动，手里留着现金和仓位，等更明确的止跌或放量确认。';
     final actionReason = '$reviewText\n\n$tomorrowText\n\n$actionText';
+    final upperTriggerValue = recentResistance > decisionNav ? recentResistance : decisionNav * (1 + max(0.02, atr14 / 100));
+    final lowerTriggerValue = recentSupport < decisionNav ? recentSupport : decisionNav * (1 - max(0.025, atr14 / 100));
+    final battlePlan = GridBattlePlan(
+      upperTrigger: upperTriggerValue.toStringAsFixed(4),
+      upperAction: sellRatio > 0 ? '触及后优先减仓 ${ratioText(max(sellRatio, 0.05))}，先把利润和仓位风险一起锁住。' : '触及后更适合分批止盈 5%，不追着高位继续加。',
+      currentValue: decisionNav.toStringAsFixed(4),
+      currentZone: buyRatio > 0
+          ? '当前处在可试探区域，适合小额跟随，不适合一把冲进去。'
+          : sellRatio > 0
+              ? '当前更像高位整理区，重点是先防回落，不是继续追涨。'
+              : '当前处在震荡观察区，先等资金把方向说清楚。',
+      lowerTrigger: lowerTriggerValue.toStringAsFixed(4),
+      lowerAction: buyRatio > 0 ? '触及后优先加仓 ${ratioText(max(buyRatio, 0.05))}，按计划低吸，不抢反弹。' : '触及后可考虑低吸 10%，前提是资金没有继续恶化。',
+    );
 
     final buyReason = buyRatio > 0
         ? [
@@ -3165,6 +3290,7 @@ class FundService {
       liquorSpecial: isLiquor
           ? '估值位置：$valuationBackground；龙头业绩：${majorNegative == null ? '关注茅台、五粮液、泸州老窖经营数据' : '五粮液管理层公告偏负面'}；消费情绪：${last20 > 0 ? '中性修复' : '偏弱'}；节假日效应：${holidayEffect()}；机构拥挤度：${std(returns.takeLast(30)) > 1.4 ? '中高' : '中'}。'
           : null,
+      battlePlan: battlePlan,
       settledItem: item,
       holdingSourceText: holdingSourceText,
       holdingStatusText: holdingStatusText,
@@ -3220,6 +3346,20 @@ class HoldingLot {
   final double shares;
   final String confirmDate;
   final String feeFreeDate;
+
+  HoldingLot copyWith({
+    double? amount,
+    double? shares,
+    String? confirmDate,
+    String? feeFreeDate,
+  }) {
+    return HoldingLot(
+      amount: amount ?? this.amount,
+      shares: shares ?? this.shares,
+      confirmDate: confirmDate ?? this.confirmDate,
+      feeFreeDate: feeFreeDate ?? this.feeFreeDate,
+    );
+  }
 
   factory HoldingLot.fromJson(Map<String, dynamic> json) => HoldingLot(
         amount: toDouble(json['amount']),
@@ -3352,6 +3492,51 @@ class PortfolioItem {
           note: plan.note,
         ),
       ],
+    );
+  }
+
+  PortfolioItem recordSell(double value, {double latestNav = 0}) {
+    if (value <= 0 || amount <= 0) return this;
+    final sellValue = min(value, amount);
+    var remaining = sellValue;
+    var nextUntracked = untrackedAmount;
+    var nextLots = <HoldingLot>[];
+
+    if (nextUntracked > 0) {
+      final used = min(nextUntracked, remaining);
+      nextUntracked -= used;
+      remaining -= used;
+    }
+
+    final sortedLots = List<HoldingLot>.from(holdingLots)
+      ..sort((a, b) => compareDateText(a.confirmDate, b.confirmDate));
+    for (final lot in sortedLots) {
+      final lotValue = latestNav > 0 && lot.shares > 0 ? lot.shares * latestNav : lot.amount;
+      if (remaining <= 0 || lotValue <= 0) {
+        nextLots.add(lot);
+        continue;
+      }
+      if (remaining >= lotValue - 0.01) {
+        remaining -= lotValue;
+        continue;
+      }
+      final keepRatio = ((lotValue - remaining) / lotValue).clamp(0.0, 1.0);
+      nextLots.add(
+        lot.copyWith(
+          amount: lot.amount * keepRatio,
+          shares: lot.shares * keepRatio,
+        ),
+      );
+      remaining = 0;
+    }
+
+    final nextAmount = max(0.0, amount - sellValue);
+    final ratio = amount <= 0 ? 0.0 : (nextAmount / amount).clamp(0.0, 1.0);
+    return copyWith(
+      amount: nextAmount,
+      shares: shares == null ? null : shares! * ratio,
+      untrackedAmount: max(0.0, nextUntracked),
+      holdingLots: nextLots,
     );
   }
 
@@ -3765,6 +3950,24 @@ class YesterdayReview {
   final bool? success;
 }
 
+class GridBattlePlan {
+  GridBattlePlan({
+    required this.upperTrigger,
+    required this.upperAction,
+    required this.currentValue,
+    required this.currentZone,
+    required this.lowerTrigger,
+    required this.lowerAction,
+  });
+
+  final String upperTrigger;
+  final String upperAction;
+  final String currentValue;
+  final String currentZone;
+  final String lowerTrigger;
+  final String lowerAction;
+}
+
 class MarketSnapshot {
   MarketSnapshot({
     required this.label,
@@ -4003,6 +4206,7 @@ class FundAnalysis {
     required this.holdings,
     required this.announcements,
     required this.liquorSpecial,
+    required this.battlePlan,
     required this.settledItem,
     required this.holdingSourceText,
     required this.holdingStatusText,
@@ -4045,6 +4249,7 @@ class FundAnalysis {
   final List<StockHolding> holdings;
   final List<Announcement> announcements;
   final String? liquorSpecial;
+  final GridBattlePlan battlePlan;
   final PortfolioItem settledItem;
   final String holdingSourceText;
   final String holdingStatusText;
@@ -4082,6 +4287,7 @@ class FundAnalysis {
     String? durationReason,
     String? summaryLine,
     DecisionModel? decision,
+    GridBattlePlan? battlePlan,
     YesterdayReview? yesterdayReview,
     String? todayLockedAt,
     String? tomorrowLockedAt,
@@ -4119,6 +4325,7 @@ class FundAnalysis {
       holdings: holdings,
       announcements: announcements,
       liquorSpecial: liquorSpecial,
+      battlePlan: battlePlan ?? this.battlePlan,
       settledItem: settledItem,
       holdingSourceText: holdingSourceText,
       holdingStatusText: holdingStatusText,
