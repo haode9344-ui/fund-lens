@@ -231,6 +231,10 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
                   if (_currentItems.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     HomeTodayTaskCard(items: _currentItems, analyses: _cache),
+                    const SizedBox(height: 12),
+                    ProfitCalendarCard(items: _currentItems, analyses: _cache),
+                    const SizedBox(height: 12),
+                    ProfitTrendCard(items: _currentItems, analyses: _cache),
                   ],
                   const SizedBox(height: 14),
                   if (_currentItems.isEmpty)
@@ -456,6 +460,269 @@ class _TaskLine extends StatelessWidget {
       ],
     );
   }
+}
+
+class ProfitCalendarCard extends StatelessWidget {
+  const ProfitCalendarCard({
+    super.key,
+    required this.items,
+    required this.analyses,
+  });
+
+  final List<PortfolioItem> items;
+  final Map<String, FundAnalysis> analyses;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = buildPortfolioDailyProfits(items, analyses, days: 21);
+    final tradingRows = rows.where((row) => row.isTradingDay && row.profit != null).toList();
+    if (tradingRows.isEmpty) {
+      return const CardShell(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('我的收益日历', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+            SizedBox(height: 8),
+            Text(
+              '暂无可精确计算的历史收益。旧持仓只记录了金额，没有真实份额和买入确认日；后续通过“加仓”确认成份额后，这里会只按真实净值显示每天赚亏。',
+              style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+      );
+    }
+    final total = tradingRows.fold<double>(0, (sum, row) => sum + (row.profit ?? 0));
+    final winDays = tradingRows.where((row) => (row.profit ?? 0) > 0).length;
+    final lossDays = tradingRows.where((row) => (row.profit ?? 0) < 0).length;
+
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('我的收益日历', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900))),
+              Text('近21天', style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _Metric(label: '累计收益', value: signedMoney(total), color: total >= 0 ? AppColors.red : AppColors.green)),
+              Expanded(child: _Metric(label: '赚钱/亏损日', value: '$winDays / $lossDays')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: rows.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 7,
+              mainAxisSpacing: 7,
+              crossAxisSpacing: 7,
+              childAspectRatio: 0.78,
+            ),
+            itemBuilder: (context, index) => _ProfitDayCell(row: rows[index]),
+          ),
+          const SizedBox(height: 10),
+          const Text('休市日标“休”；交易日收益只按已确认份额和基金真实历史净值计算，不用模拟数据。', style: TextStyle(color: AppColors.muted, fontSize: 11, height: 1.35, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfitDayCell extends StatelessWidget {
+  const _ProfitDayCell({required this.row});
+
+  final PortfolioDailyProfit row;
+
+  @override
+  Widget build(BuildContext context) {
+    final dayText = row.date.day.toString();
+    final profit = row.profit;
+    final isRest = !row.isTradingDay;
+    final isWaiting = row.isTradingDay && profit == null;
+    final color = isRest || isWaiting
+        ? AppColors.muted
+        : profit! >= 0
+            ? AppColors.red
+            : AppColors.green;
+    final bg = isRest
+        ? AppColors.softGrey
+        : isWaiting
+            ? AppColors.softGrey
+            : color.withOpacity(0.08);
+    final border = isRest || isWaiting ? AppColors.line : color.withOpacity(0.18);
+    final valueText = isRest
+        ? '休'
+        : isWaiting
+            ? '等'
+            : compactMoney(profit!);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: border),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(dayText, style: const TextStyle(color: AppColors.muted, fontSize: 11, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 5),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(valueText, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ProfitTrendCard extends StatelessWidget {
+  const ProfitTrendCard({
+    super.key,
+    required this.items,
+    required this.analyses,
+  });
+
+  final List<PortfolioItem> items;
+  final Map<String, FundAnalysis> analyses;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = buildPortfolioDailyProfits(items, analyses, days: 30).where((row) => row.isTradingDay && row.profit != null).toList();
+    if (rows.length < 2) {
+      return const CardShell(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('我的收益走势', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+            SizedBox(height: 8),
+            Text(
+              '真实收益点还不够。收益走势只使用已确认份额和官方历史净值，至少需要 2 个真实交易日后显示。',
+              style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+      );
+    }
+    final cumulative = <PortfolioDailyProfit>[];
+    var sum = 0.0;
+    for (final row in rows) {
+      sum += row.profit ?? 0;
+      cumulative.add(row.copyWith(cumulative: sum));
+    }
+    final latest = cumulative.last.cumulative ?? 0;
+    final best = cumulative.map((row) => row.cumulative ?? 0).reduce(max);
+    final worst = cumulative.map((row) => row.cumulative ?? 0).reduce(min);
+
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('我的收益走势', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900))),
+              Text('近30天', style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _Metric(label: '累计收益', value: signedMoney(latest), color: latest >= 0 ? AppColors.red : AppColors.green)),
+              Expanded(child: _Metric(label: '区间高低', value: '${compactMoney(best)} / ${compactMoney(worst)}')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 150,
+            child: CustomPaint(
+              painter: ProfitTrendPainter(points: cumulative),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ProfitTrendPainter extends CustomPainter {
+  const ProfitTrendPainter({required this.points});
+
+  final List<PortfolioDailyProfit> points;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+    const left = 44.0;
+    const right = 8.0;
+    const top = 10.0;
+    const bottom = 28.0;
+    final plot = Rect.fromLTRB(left, top, size.width - right, size.height - bottom);
+    final values = points.map((row) => row.cumulative ?? 0).toList();
+    var minValue = values.reduce(min);
+    var maxValue = values.reduce(max);
+    final absMax = max(maxValue.abs(), minValue.abs());
+    minValue = -max(absMax, 1.0);
+    maxValue = max(absMax, 1.0);
+    final zeroY = valueToY(0, minValue, maxValue, plot);
+
+    final gridPaint = Paint()
+      ..color = AppColors.line
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(plot.left, zeroY), Offset(plot.right, zeroY), gridPaint);
+
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+    void label(String text, Offset offset) {
+      textPainter.text = TextSpan(
+        text: text,
+        style: const TextStyle(color: AppColors.muted, fontSize: 10, fontWeight: FontWeight.w800),
+      );
+      textPainter.layout();
+      textPainter.paint(canvas, offset);
+    }
+
+    label(compactMoney(maxValue), Offset(0, plot.top));
+    label('0', Offset(0, zeroY - 7));
+    label(compactMoney(minValue), Offset(0, plot.bottom - 12));
+
+    final path = Path();
+    for (var i = 0; i < values.length; i += 1) {
+      final x = plot.left + (plot.width * i / max(1, values.length - 1));
+      final y = valueToY(values[i], minValue, maxValue, plot);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    final positive = values.last >= 0;
+    final linePaint = Paint()
+      ..color = positive ? AppColors.red : AppColors.green
+      ..strokeWidth = 2.4
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, linePaint);
+
+    final first = points.first.date;
+    final last = points.last.date;
+    label('${first.month}/${first.day}', Offset(plot.left, plot.bottom + 8));
+    label('${last.month}/${last.day}', Offset(plot.right - 34, plot.bottom + 8));
+  }
+
+  double valueToY(double value, double minValue, double maxValue, Rect plot) {
+    final ratio = (value - minValue) / (maxValue - minValue);
+    return plot.bottom - ratio * plot.height;
+  }
+
+  @override
+  bool shouldRepaint(covariant ProfitTrendPainter oldDelegate) => oldDelegate.points != points;
 }
 
 class FundPositionCard extends StatelessWidget {
@@ -728,6 +995,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
             BeginnerSummaryCard(analysis: _analysis),
             const SizedBox(height: 12),
             TomorrowScenariosCard(analysis: _analysis),
+            const SizedBox(height: 12),
+            DataTruthCard(analysis: _analysis),
             const SizedBox(height: 12),
             DecisionModelCard(decision: _analysis.decision),
             const SizedBox(height: 12),
@@ -1224,6 +1493,10 @@ class _IntradayChartCardState extends State<IntradayChartCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text('当日分时走势', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          if (widget.note.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(widget.note, style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w800)),
+          ],
           const SizedBox(height: 12),
           LayoutBuilder(
             builder: (context, constraints) {
@@ -1240,6 +1513,7 @@ class _IntradayChartCardState extends State<IntradayChartCard> {
                       points: widget.points,
                       selected: _selected,
                       fallbackPct: widget.fallbackPct,
+                      showEstimatedNav: !widget.note.contains('关联'),
                     ),
                     size: size,
                   ),
@@ -1254,11 +1528,12 @@ class _IntradayChartCardState extends State<IntradayChartCard> {
 }
 
 class IntradayChartPainter extends CustomPainter {
-  IntradayChartPainter({required this.points, required this.selected, required this.fallbackPct});
+  IntradayChartPainter({required this.points, required this.selected, required this.fallbackPct, required this.showEstimatedNav});
 
   final List<IntradayPoint> points;
   final IntradayPoint? selected;
   final double fallbackPct;
+  final bool showEstimatedNav;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1332,7 +1607,9 @@ class IntradayChartPainter extends CustomPainter {
       canvas.drawCircle(Offset(x, y), 5.5, Paint()..color = Colors.white);
       canvas.drawCircle(Offset(x, y), 4, Paint()..color = target.changePct >= 0 ? const Color(0xFFF44336) : AppColors.green);
 
-      final tooltip = '${formatClock(target.time)}  ${target.estimatedNav.toStringAsFixed(4)}  ${pct(target.changePct)}';
+      final tooltip = showEstimatedNav
+          ? '${formatClock(target.time)}  ${target.estimatedNav.toStringAsFixed(4)}  ${pct(target.changePct)}'
+          : '${formatClock(target.time)}  ${pct(target.changePct)}';
       _drawTooltip(canvas, tooltip, Offset(x, max(plot.top + 8, y - 38)), plot);
     }
   }
@@ -1370,7 +1647,10 @@ class IntradayChartPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant IntradayChartPainter oldDelegate) {
-    return oldDelegate.points != points || oldDelegate.selected != selected || oldDelegate.fallbackPct != fallbackPct;
+    return oldDelegate.points != points ||
+        oldDelegate.selected != selected ||
+        oldDelegate.fallbackPct != fallbackPct ||
+        oldDelegate.showEstimatedNav != showEstimatedNav;
   }
 }
 
@@ -1626,6 +1906,64 @@ class TomorrowScenariosCard extends StatelessWidget {
             label: '悲观',
             color: AppColors.green,
             text: pessimisticScenarioText(analysis),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class DataTruthCard extends StatelessWidget {
+  const DataTruthCard({super.key, required this.analysis});
+
+  final FundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = realDataChecklist(analysis);
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('真实数据检查', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 8),
+          const Text(
+            '所有结论只用公开接口拿到的真实数据和本地持仓记录计算；拿不到的数据不补线、不猜测。',
+            style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 12),
+          ...rows.map((row) => _DataTruthRow(row: row)),
+        ],
+      ),
+    );
+  }
+}
+
+class _DataTruthRow extends StatelessWidget {
+  const _DataTruthRow({required this.row});
+
+  final DataTruthItem row;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = row.available ? AppColors.red : AppColors.muted;
+    final icon = row.available ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.minus_circle_fill;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 17),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(row.title, style: const TextStyle(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 2),
+                Text(row.detail, style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w700)),
+              ],
+            ),
           ),
         ],
       ),
@@ -2170,8 +2508,9 @@ class FundService {
   }
 
   Future<IntradaySeries> _loadIntradayTrend(String code, FundBase fund, String theme, RealtimeEstimate? realtime, double fallbackNav) async {
-    if (shouldUseProxyIntraday(fund)) {
-      return await _loadProxyIntradayTrend(fund, theme, realtime, fallbackNav) ?? IntradaySeries(points: const [], note: '');
+    if (shouldUseRelatedIntraday(fund)) {
+      return await _loadRelatedIntradayTrend(fund, theme) ??
+          IntradaySeries(points: const [], note: '场外基金没有真实分钟级基金净值，也没有拿到关联板块真实分时，已隐藏分时图。');
     }
     final endpoints = [
       Uri.https('fundcomapi.tiantianfunds.com', '/mm/fundTrade/FundValuationDetail', {
@@ -2196,19 +2535,19 @@ class FundService {
         continue;
       }
     }
-    return await _loadProxyIntradayTrend(fund, theme, realtime, fallbackNav) ?? IntradaySeries(points: const [], note: '');
+    return await _loadRelatedIntradayTrend(fund, theme) ?? IntradaySeries(points: const [], note: '未拿到真实分钟级基金估值，已隐藏分时图。');
   }
 
-  Future<IntradaySeries?> _loadProxyIntradayTrend(FundBase fund, String theme, RealtimeEstimate? realtime, double fallbackNav) async {
-    final targets = intradayProxyTargets(fund);
-    void addTarget(IntradayProxyTarget target) {
+  Future<IntradaySeries?> _loadRelatedIntradayTrend(FundBase fund, String theme) async {
+    final targets = relatedIntradayTargets(fund);
+    void addTarget(IntradayTarget target) {
       if (!targets.any((item) => item.secid == target.secid)) targets.add(target);
     }
 
     try {
       final board = await _loadThemeBoard(theme);
       if (board != null && (board.code?.isNotEmpty ?? false)) {
-        addTarget(IntradayProxyTarget(secid: '90.${board.code}', name: board.name));
+        addTarget(IntradayTarget(secid: '90.${board.code}', name: board.name));
       }
     } catch (_) {}
 
@@ -2220,33 +2559,16 @@ class FundService {
         final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
         if (response.statusCode != 200) continue;
         final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-        final points = _proxyIntradayPointsFromPayload(payload, realtime, fallbackNav);
+        final points = relatedIntradayPointsFromPayload(payload);
         final minimum = minimumMinutePointCount();
         if (points.length >= minimum || (points.length >= 30 && !isTradingTime())) {
-          return IntradaySeries(points: points, note: '使用${target.name}分钟走势做代理。');
+          return IntradaySeries(points: points, note: '关联板块真实分时：${target.name}。这不是基金分钟净值，只用来看盘中方向。');
         }
       } catch (_) {
         continue;
       }
     }
     return null;
-  }
-
-  List<IntradayPoint> _proxyIntradayPointsFromPayload(Map<String, dynamic> payload, RealtimeEstimate? realtime, double fallbackNav) {
-    final data = payload['data'] as Map<String, dynamic>?;
-    final prePrice = toDouble(data?['prePrice'] ?? data?['preClose']);
-    if (prePrice <= 0) return const [];
-    final byMinute = <int, IntradayPoint>{};
-    for (final point in trendPointsFromPayload(payload)) {
-      final minute = tradingMinute(point.time);
-      final changePct = (point.close / prePrice - 1) * 100;
-      final nav = navFromChange(changePct, realtime, fallbackNav);
-      if (minute >= 0 && minute <= 240 && nav > 0) {
-        byMinute[minute] = IntradayPoint(time: point.time, estimatedNav: nav, changePct: changePct);
-      }
-    }
-    final result = byMinute.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
-    return result.map((entry) => entry.value).toList();
   }
 
   List<IntradayPoint> _parseIntradayPayload(dynamic payload, RealtimeEstimate? realtime, double fallbackNav) {
@@ -2299,7 +2621,6 @@ class FundService {
       final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav;
       nav = base * (1 + change / 100);
     }
-    if ((nav == null || nav <= 0) && fallbackNav > 0) nav = fallbackNav * (1 + change / 100);
     if (nav == null || nav <= 0) return null;
     return IntradayPoint(time: time, estimatedNav: nav, changePct: change);
   }
@@ -3676,6 +3997,7 @@ class FundService {
       holdingStatusText: holdingStatusText,
       holdingStatusBadge: holdingStatusBadge,
       holdingStatusTone: holdingStatusTone,
+      navPoints: points,
       todayLockedAt: '',
       tomorrowLockedAt: '',
     );
@@ -3939,6 +4261,39 @@ class PortfolioSummary {
   final double todayIncome;
 }
 
+class PortfolioDailyProfit {
+  PortfolioDailyProfit({
+    required this.date,
+    required this.isTradingDay,
+    this.profit,
+    this.cumulative,
+  });
+
+  final DateTime date;
+  final bool isTradingDay;
+  final double? profit;
+  final double? cumulative;
+
+  PortfolioDailyProfit copyWith({double? cumulative}) => PortfolioDailyProfit(
+        date: date,
+        isTradingDay: isTradingDay,
+        profit: profit,
+        cumulative: cumulative ?? this.cumulative,
+      );
+}
+
+class DataTruthItem {
+  const DataTruthItem({
+    required this.title,
+    required this.detail,
+    required this.available,
+  });
+
+  final String title;
+  final String detail;
+  final bool available;
+}
+
 class FundBase {
   FundBase({required this.code, required this.name, required this.points});
 
@@ -3980,8 +4335,8 @@ class IntradaySeries {
   final String note;
 }
 
-class IntradayProxyTarget {
-  const IntradayProxyTarget({required this.secid, required this.name});
+class IntradayTarget {
+  const IntradayTarget({required this.secid, required this.name});
 
   final String secid;
   final String name;
@@ -4630,6 +4985,7 @@ class FundAnalysis {
     required this.holdingStatusText,
     required this.holdingStatusBadge,
     required this.holdingStatusTone,
+    required this.navPoints,
     this.yesterdayReview,
     this.todayLockedAt = '',
     this.tomorrowLockedAt = '',
@@ -4676,6 +5032,7 @@ class FundAnalysis {
   final String holdingStatusText;
   final String holdingStatusBadge;
   final String holdingStatusTone;
+  final List<NavPoint> navPoints;
   final YesterdayReview? yesterdayReview;
   final String todayLockedAt;
   final String tomorrowLockedAt;
@@ -4758,6 +5115,7 @@ class FundAnalysis {
       holdingStatusText: holdingStatusText,
       holdingStatusBadge: holdingStatusBadge,
       holdingStatusTone: holdingStatusTone,
+      navPoints: this.navPoints,
       yesterdayReview: yesterdayReview ?? this.yesterdayReview,
       todayLockedAt: todayLockedAt ?? this.todayLockedAt,
       tomorrowLockedAt: tomorrowLockedAt ?? this.tomorrowLockedAt,
@@ -5102,11 +5460,8 @@ int toInt(dynamic value) {
 }
 
 double navFromChange(double change, RealtimeEstimate? realtime, double fallbackNav) {
-  final base = realtime == null
-      ? fallbackNav
-      : realtime.officialNav > 0
-          ? realtime.officialNav
-          : realtime.estimatedNav / (1 + realtime.estimatePct / 100);
+  if (realtime == null) return 0;
+  final base = realtime.officialNav > 0 ? realtime.officialNav : realtime.estimatedNav / (1 + realtime.estimatePct / 100);
   if (base <= 0) return 0;
   return base * (1 + change / 100);
 }
@@ -5149,7 +5504,7 @@ DateTime? parseIntradayTime(dynamic value) {
 Rect chartPlotRect(Size size) => Rect.fromLTWH(42, 10, max(1, size.width - 54), max(1, size.height - 46));
 
 double chartAxisMax(List<IntradayPoint> points, double fallbackPct) {
-  var maxAbs = fallbackPct.abs();
+  var maxAbs = 0.0;
   for (final point in points) {
     maxAbs = max(maxAbs, point.changePct.abs());
   }
@@ -5395,6 +5750,22 @@ List<TrendPoint> trendPointsFromPayload(Map<String, dynamic> payload) {
   return points;
 }
 
+List<IntradayPoint> relatedIntradayPointsFromPayload(Map<String, dynamic> payload) {
+  final data = payload['data'] as Map<String, dynamic>?;
+  final prePrice = toDouble(data?['prePrice'] ?? data?['preClose']);
+  if (prePrice <= 0) return const [];
+  final byMinute = <int, IntradayPoint>{};
+  for (final point in trendPointsFromPayload(payload)) {
+    final minute = tradingMinute(point.time);
+    final changePct = (point.close / prePrice - 1) * 100;
+    if (minute >= 0 && minute <= 240 && point.close > 0) {
+      byMinute[minute] = IntradayPoint(time: point.time, estimatedNav: point.close, changePct: changePct);
+    }
+  }
+  final result = byMinute.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+  return result.map((entry) => entry.value).toList();
+}
+
 BoardTrendStats? boardTrendStatsFromPayload(Map<String, dynamic> payload) {
   final data = payload['data'] as Map<String, dynamic>?;
   final prePrice = toDouble(data?['prePrice']);
@@ -5555,6 +5926,70 @@ FeeWindowSnapshot buildFeeWindowSnapshot(PortfolioItem item, double latestNav) {
     tone: 'warn',
     progress: null,
   );
+}
+
+List<PortfolioDailyProfit> buildPortfolioDailyProfits(
+  List<PortfolioItem> items,
+  Map<String, FundAnalysis> analyses, {
+  required int days,
+}) {
+  final today = DateTime.now();
+  final start = DateTime(today.year, today.month, today.day).subtract(Duration(days: days - 1));
+    final rows = <PortfolioDailyProfit>[];
+    final navCache = <String, Map<String, NavPoint>>{};
+    for (var i = 0; i < days; i += 1) {
+    final date = start.add(Duration(days: i));
+    final key = dateText(date);
+    final trading = isFundTradingDay(date);
+    double profit = 0;
+    var hasAnyRealNav = false;
+
+      if (trading) {
+        for (final item in items) {
+          final analysis = analyses[item.code];
+          if (analysis == null) continue;
+        final navs = navCache.putIfAbsent(
+          analysis.code,
+          () => {
+            for (final point in analysis.navPoints) point.date: point,
+          },
+        );
+        final current = navs[key];
+        if (current == null) continue;
+        final previous = previousNavPointBefore(analysis.navPoints, key);
+        if (previous == null || previous.value <= 0) continue;
+        final shares = sharesHeldOnDate(item, key);
+        if (shares <= 0) continue;
+        profit += shares * (current.value - previous.value);
+        hasAnyRealNav = true;
+      }
+    }
+
+    rows.add(
+      PortfolioDailyProfit(
+        date: date,
+        isTradingDay: trading,
+        profit: trading && hasAnyRealNav ? profit : null,
+      ),
+    );
+  }
+  return rows;
+}
+
+NavPoint? previousNavPointBefore(List<NavPoint> points, String date) {
+  NavPoint? previous;
+  for (final point in points) {
+    if (compareDateText(point.date, date) < 0) previous = point;
+    if (compareDateText(point.date, date) >= 0) break;
+  }
+  return previous;
+}
+
+double sharesHeldOnDate(PortfolioItem item, String date) {
+  return item.holdingLots
+      .where((lot) => compareDateText(lot.confirmDate, date) <= 0)
+      .map((lot) => lot.shares)
+      .sum;
 }
 
 int? durationUpperBoundDays(String summary) {
@@ -5911,14 +6346,14 @@ const linkedFundTargetCodes = <String, String>{
   '012863': '159796',
 };
 
-const directIntradayProxyTargets = <String, List<IntradayProxyTarget>>{
+const directRelatedIntradayTargets = <String, List<IntradayTarget>>{
   '025686': [
-    IntradayProxyTarget(secid: '90.BK1326', name: '半导体设备指数'),
-    IntradayProxyTarget(secid: '0.159516', name: '半导体设备ETF国泰'),
+    IntradayTarget(secid: '90.BK1326', name: '半导体设备指数'),
+    IntradayTarget(secid: '0.159516', name: '半导体设备ETF国泰'),
   ],
   '025687': [
-    IntradayProxyTarget(secid: '90.BK1326', name: '半导体设备指数'),
-    IntradayProxyTarget(secid: '0.159516', name: '半导体设备ETF国泰'),
+    IntradayTarget(secid: '90.BK1326', name: '半导体设备指数'),
+    IntradayTarget(secid: '0.159516', name: '半导体设备ETF国泰'),
   ],
 };
 
@@ -5931,26 +6366,26 @@ String holdingsLookupCode(FundBase fund) {
 
 bool isLinkedFund(String name) => RegExp(r'联接|ETF联接').hasMatch(name);
 
-bool shouldUseProxyIntraday(FundBase fund) {
+bool shouldUseRelatedIntraday(FundBase fund) {
   if (isLinkedFund(fund.name)) return true;
   final looksExchangeTraded = RegExp(r'^(159|16|5)').hasMatch(fund.code) && RegExp(r'ETF|LOF').hasMatch(fund.name);
   return !looksExchangeTraded;
 }
 
-List<IntradayProxyTarget> intradayProxyTargets(FundBase fund) {
-  final targets = <IntradayProxyTarget>[];
-  void addTarget(IntradayProxyTarget target) {
+List<IntradayTarget> relatedIntradayTargets(FundBase fund) {
+  final targets = <IntradayTarget>[];
+  void addTarget(IntradayTarget target) {
     if (!targets.any((item) => item.secid == target.secid)) targets.add(target);
   }
 
-  final direct = directIntradayProxyTargets[fund.code] ?? const [];
+  final direct = directRelatedIntradayTargets[fund.code] ?? const [];
   for (final target in direct) {
     addTarget(target);
   }
 
   final linkedCode = linkedTargetCode(fund.code);
   if (linkedCode != null) {
-    addTarget(IntradayProxyTarget(secid: '${marketFromCode(linkedCode)}.$linkedCode', name: '目标ETF $linkedCode'));
+    addTarget(IntradayTarget(secid: '${marketFromCode(linkedCode)}.$linkedCode', name: '目标ETF $linkedCode'));
   }
 
   return targets;
@@ -6369,7 +6804,7 @@ ResonanceSignal buildResonanceSignal({
   required MarketSnapshot market,
 }) {
   final board = market.board;
-  final atr14 = atrProxy(points, 14);
+  final atr14 = averageTrueRange(points, 14);
   final macd = computeMacdSnapshot(points);
   var score = 0;
   final notes = <String>[];
@@ -6686,6 +7121,49 @@ String announcementReflectionText(Announcement item) {
   return '需要行情验证，先看明天开盘和成交量。';
 }
 
+List<DataTruthItem> realDataChecklist(FundAnalysis analysis) {
+  return [
+    DataTruthItem(
+      title: '基金历史净值',
+      detail: analysis.navPoints.length >= 20 ? '已读取 ${analysis.navPoints.length} 个官方历史净值点。' : '历史净值不足，相关图表不展示。',
+      available: analysis.navPoints.length >= 20,
+    ),
+    DataTruthItem(
+      title: '盘中估值/官方净值',
+      detail: analysis.officialNavUpdated
+          ? '已切换到基金公司公布的官方净值。'
+          : analysis.realtimeAvailable
+              ? '${analysis.realtimeStatus}，用于盘中参考。'
+              : '未拿到真实盘中估值，只显示已有官方净值和真实持仓数据。',
+      available: analysis.realtimeAvailable,
+    ),
+    DataTruthItem(
+      title: '当日分时图',
+      detail: analysis.intradayPoints.isNotEmpty
+          ? (analysis.intradayNote.isEmpty ? '已读取真实分钟级基金估值点 ${analysis.intradayPoints.length} 个。' : '${analysis.intradayNote} 已读取 ${analysis.intradayPoints.length} 个真实分钟点。')
+          : '没有真实基金分钟数据或关联板块真实分钟数据时不展示。',
+      available: analysis.intradayPoints.isNotEmpty,
+    ),
+    DataTruthItem(
+      title: '重仓股与实时行情',
+      detail: analysis.holdings.isEmpty
+          ? '未拿到公开重仓股数据。'
+          : '已读取 ${analysis.holdings.length} 只公开重仓股，其中 ${analysis.holdings.where((item) => item.changePct != null).length} 只有实时行情。',
+      available: analysis.holdings.isNotEmpty,
+    ),
+    DataTruthItem(
+      title: '公告与事件',
+      detail: analysis.announcements.isEmpty ? '没有抓到高影响公告，不用空公告凑数。' : '已读取 ${analysis.announcements.length} 条高影响公告。',
+      available: analysis.announcements.isNotEmpty,
+    ),
+    DataTruthItem(
+      title: '收益日历',
+      detail: '只按已确认份额和真实历史净值计算；旧持仓缺少份额时不会倒推补算。',
+      available: analysis.settledItem.holdingLots.isNotEmpty,
+    ),
+  ];
+}
+
 List<double> dailyReturns(List<NavPoint> points) {
   final rows = <double>[];
   for (var i = 1; i < points.length; i += 1) {
@@ -6697,7 +7175,7 @@ List<double> dailyReturns(List<NavPoint> points) {
 
 List<double> recentReturns(List<NavPoint> points, int days) => dailyReturns(points).takeLast(days);
 
-double atrProxy(List<NavPoint> points, int period) {
+double averageTrueRange(List<NavPoint> points, int period) {
   final sample = dailyReturns(points).takeLast(period).map((item) => item.abs()).toList();
   if (sample.isEmpty) return 0;
   return sample.averageOrZero;
@@ -6886,7 +7364,7 @@ String reviewNextAdjustment(int predictedDirection, int actualDirection, bool su
     return '这次学习结果是把$adjustment写回下一轮模型；同类信号再次出现时，方向权重会保留，但依然要求尾盘承接、量能配合和广度确认至少再过一道关。';
   }
   if (predictedDirection == 0) {
-    return '这次学习结果是把$adjustment写回下一轮模型；下次如果观望状态下又出现真实单边结果，就把代理指数分时、市场广度和尾盘主力斜率抬成补充触发器，不再只盯总分。';
+    return '这次学习结果是把$adjustment写回下一轮模型；下次如果观望状态下又出现真实单边结果，就把关联板块真实分时、市场广度和尾盘主力斜率抬成补充触发器，不再只盯总分。';
   }
   if (actualDirection == 0) {
     return '这次学习结果是把$adjustment写回下一轮模型；以后同类方向判断如果缺少量能确认、广度确认或 ETF 折溢价约束，就先把强结论降成观望。';
@@ -6923,6 +7401,17 @@ String money(double value) {
 }
 
 String signedMoney(double value) => value >= 0 ? '+${money(value)}' : '-${money(value.abs())}';
+String compactMoney(double value) {
+  final sign = value > 0
+      ? '+'
+      : value < 0
+          ? '-'
+          : '';
+  final absValue = value.abs();
+  if (absValue >= 10000) return '$sign¥${(absValue / 10000).toStringAsFixed(1)}万';
+  if (absValue >= 1000) return '$sign¥${(absValue / 1000).toStringAsFixed(1)}k';
+  return '$sign¥${absValue.toStringAsFixed(0)}';
+}
 String pct(double value) => '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2)}%';
 
 String cnAmount(double value) {
