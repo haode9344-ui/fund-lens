@@ -608,6 +608,16 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   else
                     const Text('今天先观望，等更清楚的盘面信号。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(child: _Metric(label: '后面几天', value: _analysis.futureDaysText)),
+                      const SizedBox(width: 12),
+                      Expanded(child: _Metric(label: '波动大小', value: _analysis.volatilityText)),
+                      const SizedBox(width: 12),
+                      Expanded(child: _Metric(label: '下跌风险', value: _analysis.downsideRiskText)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
                   GuideBox(title: '新人版说明', text: _analysis.actionReason),
                   if (showBuyReason) ...[
                     const SizedBox(height: 12),
@@ -620,6 +630,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
                 ],
               ),
             ),
+            const SizedBox(height: 12),
+            BeginnerSummaryCard(analysis: _analysis),
             const SizedBox(height: 12),
             DecisionModelCard(decision: _analysis.decision),
             const SizedBox(height: 12),
@@ -1016,7 +1028,7 @@ class PredictionMetric extends StatelessWidget {
                     children: [
                       Flexible(
                         child: Text(
-                          visual.title,
+                          value,
                           style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.w900),
                         ),
                       ),
@@ -1292,7 +1304,7 @@ class DecisionModelCard extends StatelessWidget {
           _DecisionRow(label: 'ETF折溢价', value: decision.etfPricingState, tone: decision.etfPricingTone),
           _DecisionRow(label: '量价状态', value: decision.costDeviationText, tone: decision.deviationTone),
           _DecisionRow(label: '趋势共振', value: decision.resonanceState, tone: decision.resonanceTone),
-          _DecisionRow(label: '持续判断', value: decision.durationState, tone: decision.durationTone),
+          _DecisionRow(label: '后面几天', value: decision.durationState, tone: decision.durationTone),
           _DecisionRow(label: 'T+7 安全垫', value: decision.holdingCycleState, tone: decision.holdingCycleTone),
           _DecisionRow(label: '持仓动作', value: decision.gridTrigger, tone: decision.deviationTone),
           if (decision.reason.isNotEmpty) ...[
@@ -1383,6 +1395,107 @@ class GuideBox extends StatelessWidget {
             text,
             style: const TextStyle(color: AppColors.ink, height: 1.5, fontWeight: FontWeight.w700),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class BeginnerSummaryCard extends StatelessWidget {
+  const BeginnerSummaryCard({super.key, required this.analysis});
+
+  final FundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    final actionText = beginnerActionText(analysis);
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('新手看这里', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _BeginnerPill(label: '今天', value: analysis.todayState, tone: toneFromDirectionText(analysis.todayState))),
+              const SizedBox(width: 10),
+              Expanded(child: _BeginnerPill(label: '明天', value: analysis.tomorrowTrend, tone: toneFromDirectionText(analysis.tomorrowTrend))),
+              const SizedBox(width: 10),
+              Expanded(child: _BeginnerPill(label: '风险', value: analysis.downsideRiskText, tone: analysis.downsideRiskText == '高' ? 'bad' : analysis.downsideRiskText == '低' ? 'good' : 'warn')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(actionText, style: const TextStyle(color: AppColors.ink, height: 1.5, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _SignalBadge(label: 'ETF折溢价', tone: analysis.decision.etfPricingTone),
+              _SignalBadge(label: '板块资金', tone: analysis.decision.valuationTone),
+              _SignalBadge(label: '尾盘资金', tone: analysis.decision.trendTone),
+              _SignalBadge(label: '公告事件', tone: analysis.decision.smartMoneyTone),
+              _SignalBadge(label: 'T+7', tone: analysis.decision.holdingCycleTone),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BeginnerPill extends StatelessWidget {
+  const _BeginnerPill({required this.label, required this.value, required this.tone});
+
+  final String label;
+  final String value;
+  final String tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = toneColor(tone);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: color, fontSize: 16, fontWeight: FontWeight.w900)),
+        ],
+      ),
+    );
+  }
+}
+
+class _SignalBadge extends StatelessWidget {
+  const _SignalBadge({required this.label, required this.tone});
+
+  final String label;
+  final String tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = toneColor(tone);
+    final icon = toneIcon(tone);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.softGrey,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 5),
+          Text(label, style: const TextStyle(color: AppColors.ink, fontSize: 12, fontWeight: FontWeight.w900)),
         ],
       ),
     );
@@ -1666,7 +1779,7 @@ class FundService {
     final holdingSourceText = holdingCode == code ? '' : '该基金为联接基金，此处展示底层目标 ETF $holdingCode 最近披露的核心重仓股。';
     final holdings = await _enrichHoldings(rawHoldings);
     final tailSignalsFuture = _loadStockTailSignals(holdings);
-    final announcementsFuture = _loadAnnouncements(holdings.take(5).toList());
+    final announcementsFuture = _loadAnnouncements(holdings.take(8).toList());
     final marketBaseFuture = _loadMarket(fund, theme, holdings);
     final smartMoneyFuture = _loadSmartMoneySignal(theme, holdings);
     final tailSignals = await tailSignalsFuture;
@@ -2809,6 +2922,8 @@ class FundService {
       tailSignals.where((row) => row.ready && row.changePct != null).length >= 2,
       market.marketBreadth != null,
       market.board?.rpsPercentile != null,
+      market.board?.risingCount != null && market.board?.fallingCount != null,
+      market.etfPricing != null,
       smartMoney.evidenceCount > 0,
       ma5 > 0 && ma20 > 0 && ma60 > 0,
       yesterdayReview != null,
@@ -2842,16 +2957,8 @@ class FundService {
     final volumeState = joinSentences([forward.volumeText, breadthText]);
     final resonanceState = resonance.summary;
     final probabilityUp = (50 + totalScore * 6).clamp(10.0, 90.0).toDouble();
-    var todayState = todayTone.state;
-    var tomorrowTrend = totalScore >= 6
-        ? '明天大概率还会走强'
-        : totalScore >= 2
-            ? '明天可能继续小涨'
-            : totalScore <= -6
-                ? '明天大概率会回落'
-                : totalScore <= -2
-                    ? '明天更像偏弱震荡'
-                    : '明天方向还不清楚';
+    var todayState = buildTodayDirectionText(todayPct: todayPct, totalScore: totalScore);
+    var tomorrowTrend = buildTomorrowDirectionText(totalScore: totalScore, confidence: confidence);
     final valuationBackground = valuationText(drawdown: drawdown, last20: last20);
     final holdingRatio = totalCapital > 0 ? item.amount / totalCapital : null;
     final isHeavyPosition = holdingRatio != null ? holdingRatio > 0.5 : item.amount >= 30000;
@@ -2878,6 +2985,8 @@ class FundService {
     final feeWindowSnapshot = buildFeeWindowSnapshot(item, decisionNav);
     final etfPricing = market.etfPricing;
     final etfPremiumRatio = etfPricing?.premiumDiscountRatio;
+    final etfPremiumHigh = etfPremiumRatio != null && etfPremiumRatio >= 1;
+    final highVolatility = atr14 >= 2.6 || oneMonthVolatility >= 1.8;
     final etfPricingState = etfPricing == null
         ? '场内 ETF 的折溢价和成交活跃度暂时还没拿齐，今天先不把它当成硬拦截。'
         : etfPremiumRatio! >= 1
@@ -2897,6 +3006,16 @@ class FundService {
                 ? 'good'
                 : 'warn';
     final t7Risk = shortCycleTrade && (atr14 >= 1.8 || oneMonthVolatility >= 1.6 || hasWeekEventRisk);
+    final futureDaysText = futureDaysLabel(duration: duration, totalScore: totalScore);
+    final volatilityText = volatilityLabel(atr14: atr14, oneMonthVolatility: oneMonthVolatility);
+    final downsideRiskText = downsideRiskLabel(
+      totalScore: totalScore,
+      confidence: confidence,
+      durationTone: duration.tone,
+      majorNegative: majorNegative != null,
+      etfPremiumHigh: etfPremiumHigh,
+      highVolatility: highVolatility,
+    );
     final holdingCycleState = t7Risk
         ? hasWeekEventRisk
             ? '虽然明天可能有反弹，但未来一周还有事件扰动，场外基金现在买进去并不划算。'
@@ -2954,6 +3073,10 @@ class FundService {
       sellRatio = max(sellRatio, isHeavyPosition ? 0.08 : 0.04);
       action = 'ETF溢价过高，先降一点';
     }
+    if (buyRatio > 0 && downsideRiskText == '高') {
+      buyRatio = 0.0;
+      action = '风险偏高，先不买';
+    }
     if (forward.volumeScore <= -2 && todayPct > 0.15) {
       buyRatio = 0.0;
       sellRatio = max(sellRatio, isHeavyPosition ? 0.10 : 0.06);
@@ -2967,13 +3090,18 @@ class FundService {
     if (confidence == '极低') {
       buyRatio = 0.0;
       sellRatio = 0.0;
-      tomorrowTrend = '明天方向不明，先别急着押方向';
+      tomorrowTrend = '明天震荡';
       action = '风险不可控，今日观望';
     }
     if (isHeavyPosition && totalScore < 0) {
       sellRatio = max(sellRatio, 0.05);
       buyRatio = min(buyRatio, 0.03);
       if (sellRatio > 0) action = '仓位重可小幅减';
+    }
+    if (sellRatio == 0 && downsideRiskText == '高' && (duration.tone == 'bad' || etfPremiumHigh || majorNegative != null)) {
+      buyRatio = 0.0;
+      sellRatio = item.amount >= 10000 ? 0.08 : 0.05;
+      action = '后面几天偏弱，先减一点';
     }
     if (smartMoney.score < 0) buyRatio = min(buyRatio, 0.04);
     if (resonance.score < 0) buyRatio = min(buyRatio, 0.03);
@@ -2982,22 +3110,20 @@ class FundService {
     buyRatio = buyRatio.clamp(0.0, buyCap).toDouble();
     sellRatio = sellRatio.clamp(0.0, sellCap).toDouble();
     if (sellRatio > 0 && buyRatio == 0 && confidence != '极低') {
-      tomorrowTrend = totalScore <= -2 || majorNegative != null || (etfPremiumRatio != null && etfPremiumRatio >= 1)
-          ? '明天更像先回落再整理'
-          : '明天更要防回落';
+      tomorrowTrend = '明天偏跌';
     } else if (buyRatio > 0 && sellRatio == 0 && totalScore < 2) {
-      tomorrowTrend = '明天先看修复能不能延续';
+      tomorrowTrend = '明天偏涨';
     }
 
     if (sellRatio > 0 && buyRatio == 0) {
       todayState = totalScore <= -2 || majorNegative != null || (etfPremiumRatio != null && etfPremiumRatio >= 1)
-          ? '今天要防回落'
-          : '今天涨得有点快';
+          ? '今天偏跌'
+          : '今天震荡';
     } else if (buyRatio > 0 && sellRatio == 0) {
-      todayState = '今天偏稳，可以看多一点';
-      if (totalScore >= 2) tomorrowTrend = '明天更像继续慢慢走强';
+      todayState = todayPct >= 0 ? '今天偏涨' : '今天震荡';
+      if (totalScore >= 2) tomorrowTrend = '明天偏涨';
     } else {
-      todayState = '今天先别急';
+      todayState = buildTodayDirectionText(todayPct: todayPct, totalScore: totalScore);
     }
 
     final macroScore = ((market.overnight?.score ?? 0) + marketBackdropScore + breadthScore).toDouble();
@@ -3073,6 +3199,7 @@ class FundService {
 
     final todayReason =
         '${todayTone.reason}${useOfficialValue ? ' 晚上已切换为实际净值 ${last.value.toStringAsFixed(4)}。' : hasFundRealtime ? ' 当前盘中估值 ${pct(todayPct)}，更新时间 ${realtime!.updateTime}。' : ' 当前盘中估值暂缺，所以今天只按已经拿到的真实净值、持仓和公告来判断。'}';
+    final plainTrendText = '走势结论：$todayState，$tomorrowTrend。$futureDaysText，$volatilityText，下跌风险$downsideRiskText。';
     final reviewText = '今天盘面：${joinSentences([
           forecastBrief(todayState),
           forward.fundFlowText,
@@ -3095,14 +3222,16 @@ class FundService {
             ? '新人建议：场内 ETF 已经出现明显溢价，明天更容易被套利资金压回去，今天先别追。'
         : macroEventRisk && buyRatio == 0
             ? '新人建议：明天前后有高影响宏观或行业事件，今晚更适合空仓观望，规避突发风险。'
+        : downsideRiskText == '高' && buyRatio == 0
+            ? '新人建议：后面几天下跌风险偏高，今天不要因为一根小反弹就追进去；如果已经持有较多，可以先降一点。'
         : buyRatio > 0
             ? t7Risk
                 ? '新人建议：虽然明天不排除还有反弹，但场外基金需要持有 7 天才免手续费，这种短线窗口不划算，今天放弃追买更稳。'
-                : '新人建议：可以在 14:50 前后小额分批买入，只试探，不一次性追价。'
+                : '新人建议：明天和后面几天的胜率比风险更划算，可以在 14:50 前后小额分批买入，只试探，不一次性追价。'
             : sellRatio > 0
-                ? '新人建议：更适合先降一点仓位，把已经暴露出来的回撤风险压住。'
+                ? '新人建议：后面几天更容易回落或波动变大，先降一点仓位，把已经暴露出来的回撤风险压住。'
                 : '新人建议：今天先不动，手里留着现金和仓位，等更明确的止跌或放量确认。';
-    final actionReason = '$reviewText\n\n$tomorrowText\n\n$actionText';
+    final actionReason = '$plainTrendText\n\n$reviewText\n\n$tomorrowText\n\n$actionText';
     final upperTriggerValue = recentResistance > decisionNav ? recentResistance : decisionNav * (1 + max(0.02, atr14 / 100));
     final lowerTriggerValue = recentSupport < decisionNav ? recentSupport : decisionNav * (1 - max(0.025, atr14 / 100));
     final battlePlan = GridBattlePlan(
@@ -3120,18 +3249,18 @@ class FundService {
 
     final buyReason = buyRatio > 0
         ? [
-            '当前位置还不算热，先用小金额试探更稳。',
+            '明天和后面几天仍有上涨机会，先用小金额试探更稳。',
             forward.fundFlowText,
-            t7Risk ? '只是这波更像短线反弹，所以买入金额要压小。' : '如果尾盘承接继续稳住，明天还有上冲机会。',
+            t7Risk ? '只是这波更像短线反弹，所以买入金额要压小。' : '$futureDaysText，$volatilityText，风险没有压过机会。',
           ].join('\n')
         : [
             '现在不是舒服的买点，先别急着冲进去。',
-            t7Risk ? '哪怕明天有反弹，7 天免手续费也会让这次短线博弈不划算。' : forward.fundFlowText,
+            t7Risk ? '哪怕明天有反弹，7 天免手续费也会让这次短线博弈不划算。' : '$tomorrowTrend，$futureDaysText，下跌风险$downsideRiskText。',
             '等更明确的止跌和放量，再出手会更稳。',
           ].join('\n');
     final sellReason = sellRatio > 0
         ? [
-            majorNegative != null ? '${majorNegative.stockName}的负面消息还在压情绪，短线先别硬扛。' : (duration.tone == 'bad' ? '最近这段已经涨了不少，短线有点热，回调随时会来。' : '今天盘面没有真正转强，先别把仓位压得太重。'),
+            majorNegative != null ? '${majorNegative.stockName}的负面消息还在压情绪，短线先别硬扛。' : (duration.tone == 'bad' ? '$futureDaysText，短线回调压力已经变大。' : '$tomorrowTrend，$downsideRiskText风险，先别把仓位压得太重。'),
             forward.volumeScore <= -1 ? '今天虽然还在涨，但成交量没跟上，新资金接力偏弱。' : '尾盘没有看到很强的抢筹，买盘接力还不够坚决。',
             '如果你已经有浮盈，先卖出 ${ratioText(sellRatio)} 左右更稳，先把利润装进口袋。',
           ].join('\n')
@@ -3163,7 +3292,10 @@ class FundService {
       sellReason: sellReason,
       durationText: duration.summary,
       durationReason: duration.reason,
-      summaryLine: '${forecastCompact(todayState)} · 明天${forecastCompact(tomorrowTrend)} · ${duration.summary} · $action',
+      futureDaysText: futureDaysText,
+      volatilityText: volatilityText,
+      downsideRiskText: downsideRiskText,
+      summaryLine: '$todayState · $tomorrowTrend · $futureDaysText · $action',
       realtimeAvailable: hasFundRealtime || useOfficialValue,
       realtimeNavText: decisionNav.toStringAsFixed(4),
       realtimeTimeText: useOfficialValue
@@ -4122,6 +4254,9 @@ class FundAnalysis {
     required this.sellReason,
     required this.durationText,
     required this.durationReason,
+    required this.futureDaysText,
+    required this.volatilityText,
+    required this.downsideRiskText,
     required this.summaryLine,
     required this.realtimeAvailable,
     required this.realtimeNavText,
@@ -4165,6 +4300,9 @@ class FundAnalysis {
   final String sellReason;
   final String durationText;
   final String durationReason;
+  final String futureDaysText;
+  final String volatilityText;
+  final String downsideRiskText;
   final String summaryLine;
   final bool realtimeAvailable;
   final String realtimeNavText;
@@ -4212,6 +4350,9 @@ class FundAnalysis {
     String? sellReason,
     String? durationText,
     String? durationReason,
+    String? futureDaysText,
+    String? volatilityText,
+    String? downsideRiskText,
     String? summaryLine,
     DecisionModel? decision,
     GridBattlePlan? battlePlan,
@@ -4241,6 +4382,9 @@ class FundAnalysis {
       sellReason: sellReason ?? this.sellReason,
       durationText: durationText ?? this.durationText,
       durationReason: durationReason ?? this.durationReason,
+      futureDaysText: futureDaysText ?? this.futureDaysText,
+      volatilityText: volatilityText ?? this.volatilityText,
+      downsideRiskText: downsideRiskText ?? this.downsideRiskText,
       summaryLine: summaryLine ?? this.summaryLine,
       realtimeAvailable: realtimeAvailable,
       realtimeNavText: realtimeNavText,
@@ -4285,6 +4429,9 @@ class AnalysisLockState {
     this.sellReason,
     this.durationText,
     this.durationReason,
+    this.futureDaysText,
+    this.volatilityText,
+    this.downsideRiskText,
     this.summaryLine,
     this.decision,
   });
@@ -4307,6 +4454,9 @@ class AnalysisLockState {
   final String? sellReason;
   final String? durationText;
   final String? durationReason;
+  final String? futureDaysText;
+  final String? volatilityText;
+  final String? downsideRiskText;
   final String? summaryLine;
   final DecisionModel? decision;
 
@@ -4330,6 +4480,9 @@ class AnalysisLockState {
     String? sellReason,
     String? durationText,
     String? durationReason,
+    String? futureDaysText,
+    String? volatilityText,
+    String? downsideRiskText,
     String? summaryLine,
     DecisionModel? decision,
   }) {
@@ -4352,6 +4505,9 @@ class AnalysisLockState {
       sellReason: sellReason ?? this.sellReason,
       durationText: durationText ?? this.durationText,
       durationReason: durationReason ?? this.durationReason,
+      futureDaysText: futureDaysText ?? this.futureDaysText,
+      volatilityText: volatilityText ?? this.volatilityText,
+      downsideRiskText: downsideRiskText ?? this.downsideRiskText,
       summaryLine: summaryLine ?? this.summaryLine,
       decision: decision ?? this.decision,
     );
@@ -4380,6 +4536,9 @@ class AnalysisLockState {
       sellReason: analysis.sellReason,
       durationText: analysis.durationText,
       durationReason: analysis.durationReason,
+      futureDaysText: analysis.futureDaysText,
+      volatilityText: analysis.volatilityText,
+      downsideRiskText: analysis.downsideRiskText,
       summaryLine: analysis.summaryLine,
       decision: analysis.decision,
     );
@@ -4411,6 +4570,9 @@ class AnalysisLockState {
       sellReason: hasTomorrowLock ? sellReason : null,
       durationText: hasTomorrowLock ? durationText : null,
       durationReason: hasTomorrowLock ? durationReason : null,
+      futureDaysText: hasTomorrowLock ? futureDaysText : null,
+      volatilityText: hasTomorrowLock ? volatilityText : null,
+      downsideRiskText: hasTomorrowLock ? downsideRiskText : null,
       summaryLine: hasTomorrowLock ? summaryLine : null,
       decision: lockedDecision,
       tomorrowLockedAt: hasTomorrowLock ? tomorrowLockedAt : analysis.tomorrowLockedAt,
@@ -4436,6 +4598,9 @@ class AnalysisLockState {
         'sellReason': sellReason,
         'durationText': durationText,
         'durationReason': durationReason,
+        'futureDaysText': futureDaysText,
+        'volatilityText': volatilityText,
+        'downsideRiskText': downsideRiskText,
         'summaryLine': summaryLine,
         'decision': decision?.toJson(),
       };
@@ -4459,6 +4624,9 @@ class AnalysisLockState {
         sellReason: json['sellReason']?.toString(),
         durationText: json['durationText']?.toString(),
         durationReason: json['durationReason']?.toString(),
+        futureDaysText: json['futureDaysText']?.toString(),
+        volatilityText: json['volatilityText']?.toString(),
+        downsideRiskText: json['downsideRiskText']?.toString(),
         summaryLine: json['summaryLine']?.toString(),
         decision: json['decision'] is Map ? DecisionModel.fromJson((json['decision'] as Map).cast<String, dynamic>()) : null,
       );
@@ -4666,6 +4834,71 @@ String actionReasonSide(String action, double buyRatio, double sellRatio) {
   if (sellRatio > 0 && buyRatio <= 0) return 'sell';
   if (buyRatio > 0 && sellRatio > 0) return buyRatio >= sellRatio ? 'buy' : 'sell';
   return 'hold';
+}
+
+String buildTodayDirectionText({required double todayPct, required int totalScore}) {
+  if (todayPct >= 0.45 || totalScore >= 4) return '今天偏涨';
+  if (todayPct <= -0.45 || totalScore <= -4) return '今天偏跌';
+  if (todayPct >= 0.15 || totalScore >= 2) return '今天小涨';
+  if (todayPct <= -0.15 || totalScore <= -2) return '今天小跌';
+  return '今天震荡';
+}
+
+String buildTomorrowDirectionText({required int totalScore, required String confidence}) {
+  if (confidence == '极低') return '明天震荡';
+  if (totalScore >= 5) return '明天偏涨';
+  if (totalScore <= -5) return '明天偏跌';
+  if (totalScore >= 2) return '明天小涨';
+  if (totalScore <= -2) return '明天小跌';
+  return '明天震荡';
+}
+
+String futureDaysLabel({required DurationSignal duration, required int totalScore}) {
+  final days = RegExp(r'\d+(?:-\d+)?\s*天').firstMatch(duration.summary)?.group(0)?.replaceAll(' ', '');
+  final dayText = days ?? (duration.tone == 'good' ? '2-3天' : duration.tone == 'bad' ? '1-2天' : '1-2天');
+  if (duration.tone == 'good' || totalScore >= 4) return '可能涨$dayText';
+  if (duration.tone == 'bad' || totalScore <= -4) return '可能跌$dayText';
+  return '震荡$dayText';
+}
+
+String volatilityLabel({required double atr14, required double oneMonthVolatility}) {
+  final value = max(atr14, oneMonthVolatility);
+  if (value >= 2.6) return '波动大';
+  if (value >= 1.4) return '波动中';
+  return '波动小';
+}
+
+String downsideRiskLabel({
+  required int totalScore,
+  required String confidence,
+  required String durationTone,
+  required bool majorNegative,
+  required bool etfPremiumHigh,
+  required bool highVolatility,
+}) {
+  if (confidence == '极低' || majorNegative || etfPremiumHigh) return '高';
+  if (totalScore <= -4 || durationTone == 'bad') return '高';
+  if (totalScore <= -2 || highVolatility) return '中';
+  return '低';
+}
+
+String toneFromDirectionText(String text) {
+  if (text.contains('偏涨') || text.contains('小涨')) return 'good';
+  if (text.contains('偏跌') || text.contains('小跌')) return 'bad';
+  return 'warn';
+}
+
+String beginnerActionText(FundAnalysis analysis) {
+  if (analysis.buyRatio > 0 && analysis.sellRatio == 0) {
+    return '这不是让你满仓追进去，而是说明上涨机会大于风险。可以按建议金额小额分批买，买完也要看后面几天是否继续放量。';
+  }
+  if (analysis.sellRatio > 0 && analysis.buyRatio == 0) {
+    return '卖出不是清仓逃跑，而是先把一小部分风险降下来。后面几天偏弱、波动变大或下跌风险偏高时，先减一点会更稳。';
+  }
+  if (analysis.downsideRiskText == '高') {
+    return '现在最重要的是别追。即使今天有反弹，后面几天也可能回落，等风险降下来再买更舒服。';
+  }
+  return '现在还没有强买点，也没有强卖点。新手最适合先不动，等明天方向、成交量和资金流再确认。';
 }
 
 Announcement classifyAnnouncement(Map<String, dynamic> row, StockHolding holding) {
@@ -5912,13 +6145,13 @@ class ForecastVisual {
 
 ForecastVisual forecastVisual(String text) {
   final lower = text.trim();
-  final storm = containsAnyKeyword(lower, const ['回落风险很大', '风险不可控', '低开低走', '大跌', '主跌', '盘面转弱', '过热', '先保护本金', '今天要防回落', '涨得有点快']);
-  final weak = containsAnyKeyword(lower, const ['偏弱', '回落', '走弱', '缩量上涨', '方向不明', '震荡不明', '看不清', '分歧', '观望', '先别着急', '今天先别急']);
+  final storm = containsAnyKeyword(lower, const ['回落风险很大', '风险不可控', '低开低走', '大跌', '主跌', '盘面转弱', '过热', '先保护本金', '今天要防回落', '涨得有点快', '偏跌']);
+  final weak = containsAnyKeyword(lower, const ['偏弱', '小跌', '回落', '走弱', '缩量上涨', '方向不明', '震荡不明', '看不清', '分歧', '观望', '先别着急', '今天先别急']);
   final strong = containsAnyKeyword(lower, const ['把握更大', '高开高走', '主升', '大涨', '明显转暖', '盘面偏强', '大概率还会走强', '继续慢慢走强']);
-  final warm = containsAnyKeyword(lower, const ['转强', '走高', '反弹', '企稳', '偏暖', '小幅走高', '盘面转暖', '有一点转强', '可以看多一点', '继续小涨']);
+  final warm = containsAnyKeyword(lower, const ['偏涨', '小涨', '转强', '走高', '反弹', '企稳', '偏暖', '小幅走高', '盘面转暖', '有一点转强', '可以看多一点', '继续小涨']);
   if (storm) {
     return ForecastVisual(
-      title: '先保护本金',
+      title: '偏跌',
       subtitle: '回落风险偏大，今天先防守',
       icon: CupertinoIcons.exclamationmark_triangle_fill,
       color: AppColors.green,
@@ -5926,7 +6159,7 @@ ForecastVisual forecastVisual(String text) {
   }
   if (strong) {
     return ForecastVisual(
-      title: '可以偏乐观',
+      title: '偏涨',
       subtitle: '资金还在跟，适合继续拿着',
       icon: CupertinoIcons.arrow_up_circle_fill,
       color: AppColors.red,
@@ -5934,7 +6167,7 @@ ForecastVisual forecastVisual(String text) {
   }
   if (warm) {
     return ForecastVisual(
-      title: '有一点转强',
+      title: '小涨',
       subtitle: '资金在回流，可以小步试试',
       icon: CupertinoIcons.chart_bar_circle_fill,
       color: AppColors.red,
@@ -5942,14 +6175,14 @@ ForecastVisual forecastVisual(String text) {
   }
   if (weak) {
     return ForecastVisual(
-      title: '先别着急',
+      title: '小跌',
       subtitle: '盘面偏弱，建议多看少动',
       icon: CupertinoIcons.cloud_fill,
       color: AppColors.green,
     );
   }
   return ForecastVisual(
-    title: '先看看',
+    title: '震荡',
     subtitle: '方向还不够清楚，先别急着下手',
     icon: CupertinoIcons.minus_circle_fill,
     color: AppColors.ink,
@@ -5968,8 +6201,8 @@ Color signalColor(String text) {
 }
 
 int predictionDirectionFromText(String text) {
-  if (containsAnyKeyword(text, const ['把握更大', '走高机会', '偏强', '转强', '修复', '买入', '加仓', '低吸', '试探', '走强', '继续小涨', '看多一点'])) return 1;
-  if (containsAnyKeyword(text, const ['回落风险', '偏弱', '低开承压', '走弱', '回调', '冲高回落', '先回落', '减仓', '小幅减', '锁利润', '低开低走', '面临回落', '今天要防回落', '涨得有点快'])) return -1;
+  if (containsAnyKeyword(text, const ['把握更大', '走高机会', '偏涨', '小涨', '偏强', '转强', '修复', '买入', '加仓', '低吸', '试探', '走强', '继续小涨', '看多一点'])) return 1;
+  if (containsAnyKeyword(text, const ['回落风险', '偏跌', '小跌', '偏弱', '低开承压', '走弱', '回调', '冲高回落', '先回落', '减仓', '小幅减', '锁利润', '低开低走', '面临回落', '今天要防回落', '涨得有点快'])) return -1;
   return 0;
 }
 
