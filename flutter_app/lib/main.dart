@@ -228,6 +228,10 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
                     totalAmount: summary.amount,
                     todayIncome: summary.todayIncome,
                   ),
+                  if (_currentItems.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    HomeTodayTaskCard(items: _currentItems, analyses: _cache),
+                  ],
                   const SizedBox(height: 14),
                   if (_currentItems.isEmpty)
                     EmptyPortfolioCard(title: _currentTitle, onAdd: _addFund)
@@ -364,6 +368,96 @@ class EmptyPortfolioCard extends StatelessWidget {
   }
 }
 
+class HomeTodayTaskCard extends StatelessWidget {
+  const HomeTodayTaskCard({
+    super.key,
+    required this.items,
+    required this.analyses,
+  });
+
+  final List<PortfolioItem> items;
+  final Map<String, FundAnalysis> analyses;
+
+  @override
+  Widget build(BuildContext context) {
+    final loaded = <MapEntry<PortfolioItem, FundAnalysis>>[];
+    for (final item in items) {
+      final analysis = analyses[item.code];
+      if (analysis != null) loaded.add(MapEntry(item, analysis));
+    }
+    loaded.sort((a, b) => homeTaskScore(b.value).compareTo(homeTaskScore(a.value)));
+
+    final totalIncome = loaded.fold<double>(
+      0,
+      (sum, row) => sum + positionValue(row.key) * row.value.todayPct / 100,
+    );
+    final totalPending = items.fold<double>(0, (sum, item) => sum + item.pendingAmount);
+    final target = loaded.firstOrNull;
+    final analysis = target?.value;
+    final action = analysis == null ? '正在读取分析' : homeActionText(analysis);
+    final navStatus = analysis == null
+        ? '正在检查今晚实际净值'
+        : analysis.officialNavUpdated
+            ? '官方净值已更新，今日收益已按实际净值重算。'
+            : '等待晚间官方净值，更新后会自动重算今日收益。';
+    final pendingText = totalPending <= 0
+        ? '没有确认中的买入资金。'
+        : homePendingText(items);
+    final reminder = analysis == null
+        ? '14:55 会刷新最终操作建议。'
+        : (analysis.buyRatio > 0 || analysis.sellRatio > 0)
+            ? '14:55提醒：${analysis.name} 触发 ${homeActionText(analysis)}。'
+            : '14:55提醒：当前以观望为主，不需要临近收盘操作。';
+
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('今日任务', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _Metric(label: '今天盈亏', value: signedMoney(totalIncome), color: totalIncome >= 0 ? AppColors.red : AppColors.green)),
+              const SizedBox(width: 12),
+              Expanded(child: _Metric(label: '14:55动作', value: action)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _TaskLine(icon: CupertinoIcons.bell, text: reminder),
+          const SizedBox(height: 8),
+          _TaskLine(icon: CupertinoIcons.moon_stars, text: navStatus),
+          const SizedBox(height: 8),
+          _TaskLine(icon: CupertinoIcons.calendar_badge_clock, text: pendingText),
+        ],
+      ),
+    );
+  }
+}
+
+class _TaskLine extends StatelessWidget {
+  const _TaskLine({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: AppColors.blue),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(color: AppColors.muted, height: 1.35, fontSize: 12, fontWeight: FontWeight.w800),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class FundPositionCard extends StatelessWidget {
   const FundPositionCard({
     super.key,
@@ -431,7 +525,7 @@ class FundPositionCard extends StatelessWidget {
               if (pending > 0) ...[
                 const SizedBox(height: 8),
                 Text(
-                  '买入确认中：${money(pending)}',
+                  pendingBuyInlineText(item),
                   style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800),
                 ),
               ],
@@ -569,6 +663,10 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   ),
                   const SizedBox(height: 10),
                   FeeWindowSummaryCard(item: _analysis.settledItem, latestNav: _analysis.latestValue),
+                  if (_analysis.settledItem.pendingAmount > 0) ...[
+                    const SizedBox(height: 10),
+                    PendingBuySummary(item: _analysis.settledItem),
+                  ],
                 ],
               ),
             ),
@@ -615,8 +713,6 @@ class _FundDetailPageState extends State<FundDetailPage> {
                       Expanded(child: _Metric(label: '下跌风险', value: _analysis.downsideRiskText)),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  GuideBox(title: '新手结论', text: _analysis.actionReason),
                   if (showBuyReason) ...[
                     const SizedBox(height: 12),
                     ReasonBox(title: '买入原因', text: _analysis.buyReason, color: AppColors.red),
@@ -630,6 +726,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
             ),
             const SizedBox(height: 12),
             BeginnerSummaryCard(analysis: _analysis),
+            const SizedBox(height: 12),
+            TomorrowScenariosCard(analysis: _analysis),
             const SizedBox(height: 12),
             DecisionModelCard(decision: _analysis.decision),
             const SizedBox(height: 12),
@@ -660,8 +758,11 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   const SizedBox(height: 12),
                   if (_analysis.holdings.isEmpty)
                     const Text('暂时还没拿到最新的前十大重仓股，下拉刷新后会再试一次。', style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700))
-                  else
+                  else ...[
+                    HoldingContributionSummary(holdings: _analysis.holdings),
+                    const SizedBox(height: 6),
                     ..._analysis.holdings.take(10).map((item) => StockHoldingRow(item: item)),
+                  ],
                   if (_analysis.announcements.isNotEmpty) ...[
                     const Divider(height: 28),
                     const Text('高影响公告', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
@@ -878,11 +979,11 @@ class PendingBuySummary extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('买入确认中：${money(item.pendingAmount)}', style: const TextStyle(fontWeight: FontWeight.w900)),
+          Text('确认中资金日历：${money(item.pendingAmount)}', style: const TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 5),
           ...item.pendingBuys.take(3).map(
                 (order) => Text(
-                  '${money(order.amount)} · ${order.beforeCutoff ? '15点前买入' : '15点后买入'} · ${order.confirmDate} 确认',
+                  pendingOrderCalendarLine(order),
                   style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.4, fontWeight: FontWeight.w700),
                 ),
               ),
@@ -1273,13 +1374,21 @@ class IntradayChartPainter extends CustomPainter {
   }
 }
 
-class DecisionModelCard extends StatelessWidget {
+class DecisionModelCard extends StatefulWidget {
   const DecisionModelCard({super.key, required this.decision});
 
   final DecisionModel decision;
 
   @override
+  State<DecisionModelCard> createState() => _DecisionModelCardState();
+}
+
+class _DecisionModelCardState extends State<DecisionModelCard> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final decision = widget.decision;
     return CardShell(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1296,15 +1405,26 @@ class DecisionModelCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(decision.summary, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, height: 1.35)),
           const SizedBox(height: 12),
-          _DecisionRow(label: '大盘背景', value: compactDecisionText('外围背景', decision.macroState, decision.macroTone), tone: decision.macroTone),
           _DecisionRow(label: '板块资金', value: compactDecisionText('板块资金', decision.valuationState, decision.valuationTone), tone: decision.valuationTone),
           _DecisionRow(label: '尾盘动向', value: compactDecisionText('尾盘动向', decision.trendState, decision.trendTone), tone: decision.trendTone),
-          _DecisionRow(label: '聪明资金', value: compactDecisionText('聪明资金', decision.smartMoneyState, decision.smartMoneyTone), tone: decision.smartMoneyTone),
-          _DecisionRow(label: 'ETF折溢价', value: compactDecisionText('ETF折溢价', decision.etfPricingState, decision.etfPricingTone), tone: decision.etfPricingTone),
-          _DecisionRow(label: '量价状态', value: compactDecisionText('量价状态', decision.costDeviationText, decision.deviationTone), tone: decision.deviationTone),
-          _DecisionRow(label: '趋势位置', value: compactDecisionText('趋势共振', decision.resonanceState, decision.resonanceTone), tone: decision.resonanceTone),
           _DecisionRow(label: '后面几天', value: compactDecisionText('后面几天', decision.durationState, decision.durationTone), tone: decision.durationTone),
-          _DecisionRow(label: 'T+7', value: compactDecisionText('T+7 安全垫', decision.holdingCycleState, decision.holdingCycleTone), tone: decision.holdingCycleTone),
+          if (_expanded) ...[
+            const SizedBox(height: 4),
+            _DecisionRow(label: '大盘背景', value: compactDecisionText('外围背景', decision.macroState, decision.macroTone), tone: decision.macroTone),
+            _DecisionRow(label: '聪明资金', value: compactDecisionText('聪明资金', decision.smartMoneyState, decision.smartMoneyTone), tone: decision.smartMoneyTone),
+            _DecisionRow(label: 'ETF折溢价', value: compactDecisionText('ETF折溢价', decision.etfPricingState, decision.etfPricingTone), tone: decision.etfPricingTone),
+            _DecisionRow(label: '量价状态', value: compactDecisionText('量价状态', decision.costDeviationText, decision.deviationTone), tone: decision.deviationTone),
+            _DecisionRow(label: '趋势位置', value: compactDecisionText('趋势共振', decision.resonanceState, decision.resonanceTone), tone: decision.resonanceTone),
+            _DecisionRow(label: 'T+7', value: compactDecisionText('T+7 安全垫', decision.holdingCycleState, decision.holdingCycleTone), tone: decision.holdingCycleTone),
+          ],
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _expanded = !_expanded),
+              icon: Icon(_expanded ? CupertinoIcons.chevron_up : CupertinoIcons.chevron_down, size: 15),
+              label: Text(_expanded ? '收起详细依据' : '展开看详细依据'),
+            ),
+          ),
         ],
       ),
     );
@@ -1354,6 +1474,10 @@ class YesterdayReviewCard extends StatelessWidget {
             review.detail,
             style: const TextStyle(color: AppColors.ink, height: 1.45, fontWeight: FontWeight.w700),
           ),
+          if (review.trackRecord.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _ReviewLine(label: '模型记录', text: review.trackRecord),
+          ],
           const SizedBox(height: 10),
           _ReviewLine(label: reasonLabel, text: review.diagnosis),
           const SizedBox(height: 8),
@@ -1402,24 +1526,36 @@ class BeginnerSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final actionText = beginnerActionText(analysis);
+    final showWhyNotBuy = analysis.buyRatio <= 0.001;
     return CardShell(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('新手看这里', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const Text('我现在该怎么做', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(child: _BeginnerPill(label: '今天', value: analysis.todayState, tone: toneFromDirectionText(analysis.todayState))),
-              const SizedBox(width: 10),
-              Expanded(child: _BeginnerPill(label: '明天', value: analysis.tomorrowTrend, tone: toneFromDirectionText(analysis.tomorrowTrend))),
-              const SizedBox(width: 10),
-              Expanded(child: _BeginnerPill(label: '风险', value: analysis.downsideRiskText, tone: analysis.downsideRiskText == '高' ? 'bad' : analysis.downsideRiskText == '低' ? 'good' : 'warn')),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(actionText, style: const TextStyle(color: AppColors.ink, height: 1.5, fontWeight: FontWeight.w800)),
+          _ActionLine(label: '今天', value: analysis.todayState),
+          const SizedBox(height: 8),
+          _ActionLine(label: '明天', value: analysis.tomorrowTrend),
+          const SizedBox(height: 8),
+          _ActionLine(label: '动作', value: homeActionText(analysis)),
+          const SizedBox(height: 8),
+          _ActionLine(label: '原因', value: beginnerReasonShort(analysis)),
+          if (showWhyNotBuy) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.softGrey,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.line),
+              ),
+              child: Text(
+                whyNotBuyText(analysis),
+                style: const TextStyle(color: AppColors.ink, height: 1.45, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -1431,6 +1567,98 @@ class BeginnerSummaryCard extends StatelessWidget {
               _SignalBadge(label: '公告事件', tone: analysis.decision.smartMoneyTone),
               _SignalBadge(label: 'T+7', tone: analysis.decision.holdingCycleTone),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionLine extends StatelessWidget {
+  const _ActionLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 44,
+          child: Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w900)),
+        ),
+        Expanded(
+          child: Text(value, style: const TextStyle(color: AppColors.ink, height: 1.35, fontWeight: FontWeight.w900)),
+        ),
+      ],
+    );
+  }
+}
+
+class TomorrowScenariosCard extends StatelessWidget {
+  const TomorrowScenariosCard({super.key, required this.analysis});
+
+  final FundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('三种明天剧本', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          _ScenarioLine(
+            label: '乐观',
+            color: AppColors.red,
+            text: optimisticScenarioText(analysis),
+          ),
+          const SizedBox(height: 10),
+          _ScenarioLine(
+            label: '正常',
+            color: AppColors.ink,
+            text: normalScenarioText(analysis),
+          ),
+          const SizedBox(height: 10),
+          _ScenarioLine(
+            label: '悲观',
+            color: AppColors.green,
+            text: pessimisticScenarioText(analysis),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScenarioLine extends StatelessWidget {
+  const _ScenarioLine({required this.label, required this.text, required this.color});
+
+  final String label;
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.16)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 42,
+            child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w900)),
+          ),
+          Expanded(
+            child: Text(text, style: const TextStyle(color: AppColors.ink, height: 1.4, fontWeight: FontWeight.w800)),
           ),
         ],
       ),
@@ -1669,6 +1897,70 @@ class _DecisionRow extends StatelessWidget {
   }
 }
 
+class HoldingContributionSummary extends StatelessWidget {
+  const HoldingContributionSummary({super.key, required this.holdings});
+
+  final List<StockHolding> holdings;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = holdings
+        .map((item) => MapEntry(item, estimatedHoldingContribution(item)))
+        .where((row) => row.value != null)
+        .map((row) => MapEntry(row.key, row.value!))
+        .toList();
+    if (rows.isEmpty) return const SizedBox.shrink();
+
+    final supports = rows.where((row) => row.value > 0).toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final drags = rows.where((row) => row.value < 0).toList()
+      ..sort((a, b) => a.value.compareTo(b.value));
+    final dragText = drags.isEmpty ? '暂未看到明显拖累股' : drags.take(2).map((row) => '${row.key.name} ${pct(row.value)}').join('、');
+    final supportText = supports.isEmpty ? '暂未看到明显支撑股' : supports.take(2).map((row) => '${row.key.name} ${pct(row.value)}').join('、');
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.softGrey,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('今日重仓贡献', style: TextStyle(fontWeight: FontWeight.w900)),
+          const SizedBox(height: 8),
+          _ContributionLine(label: '主要拖累', text: dragText, color: AppColors.green),
+          const SizedBox(height: 5),
+          _ContributionLine(label: '主要支撑', text: supportText, color: AppColors.red),
+          const SizedBox(height: 6),
+          const Text('按披露权重和实时涨跌估算，最终净值以基金公司公布为准。', style: TextStyle(color: AppColors.muted, fontSize: 11, height: 1.35, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ContributionLine extends StatelessWidget {
+  const _ContributionLine({required this.label, required this.text, required this.color});
+
+  final String label;
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(width: 64, child: Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w900))),
+        Expanded(child: Text(text, style: const TextStyle(color: AppColors.ink, height: 1.35, fontWeight: FontWeight.w800))),
+      ],
+    );
+  }
+}
+
 class AnnouncementTile extends StatelessWidget {
   const AnnouncementTile({super.key, required this.item});
 
@@ -1701,6 +1993,11 @@ class AnnouncementTile extends StatelessWidget {
           Text('${item.stockName} · ${item.title}', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, height: 1.35)),
           const SizedBox(height: 5),
           Text(item.reason, style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.45, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 5),
+          Text(
+            '影响状态：${announcementReflectionText(item)}',
+            style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.45, fontWeight: FontWeight.w800),
+          ),
         ],
       ),
     );
@@ -2200,6 +2497,7 @@ class FundService {
     final success = predictedDirection == actualDirection;
     final actualText = actualDirectionText(actualDirection);
     final scoreAdjustment = reviewScoreAdjustment(predictedDirection, actualDirection, success);
+    final trackRecord = await _saveAndSummarizeReviewHistory(code, dateText(yesterday), success);
     return YesterdayReview(
       headline: success
           ? predictedDirection == 0
@@ -2215,7 +2513,30 @@ class FundService {
       predictedDirection: predictedDirection,
       actualDirection: actualDirection,
       scoreAdjustment: scoreAdjustment,
+      trackRecord: trackRecord,
     );
+  }
+
+  Future<String> _saveAndSummarizeReviewHistory(String code, String date, bool success) async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'review_history_$code';
+    final raw = prefs.getString(key);
+    final rows = <Map<String, dynamic>>[];
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        rows.addAll((jsonDecode(raw) as List<dynamic>).whereType<Map<String, dynamic>>());
+      } catch (_) {
+        rows.clear();
+      }
+    }
+    rows.removeWhere((row) => row['date'] == date);
+    rows.add({'date': date, 'success': success});
+    rows.sort((a, b) => (b['date'] ?? '').toString().compareTo((a['date'] ?? '').toString()));
+    final latest = rows.take(7).toList();
+    await prefs.setString(key, jsonEncode(latest));
+    final hit = latest.where((row) => row['success'] == true).length;
+    final miss = latest.length - hit;
+    return '近 ${latest.length} 次预判：命中 $hit 次，失误 $miss 次。连续使用后会自动累计到近 7 次。';
   }
 
   Future<OvernightSignal> _loadOvernightSignal(String theme) async {
@@ -4014,6 +4335,7 @@ class YesterdayReview {
     this.predictedDirection = 0,
     this.actualDirection = 0,
     this.scoreAdjustment = 0,
+    this.trackRecord = '',
   });
 
   final String headline;
@@ -4024,6 +4346,7 @@ class YesterdayReview {
   final int predictedDirection;
   final int actualDirection;
   final int scoreAdjustment;
+  final String trackRecord;
 }
 
 class GridBattlePlan {
@@ -5781,8 +6104,31 @@ DateTime previousTradingDate(DateTime value) {
 }
 
 bool isFundTradingDay(DateTime value) {
+  if (chinaMarketHolidays2026.contains(dateText(value))) return false;
   return value.weekday != DateTime.saturday && value.weekday != DateTime.sunday;
 }
+
+const Set<String> chinaMarketHolidays2026 = {
+  '2026-01-01',
+  '2026-01-02',
+  '2026-02-16',
+  '2026-02-17',
+  '2026-02-18',
+  '2026-02-19',
+  '2026-02-20',
+  '2026-02-23',
+  '2026-04-06',
+  '2026-05-01',
+  '2026-05-04',
+  '2026-05-05',
+  '2026-06-19',
+  '2026-09-25',
+  '2026-10-01',
+  '2026-10-02',
+  '2026-10-05',
+  '2026-10-06',
+  '2026-10-07',
+};
 
 int compareDateText(String a, String b) {
   final da = DateTime.tryParse(a);
@@ -6211,6 +6557,133 @@ String ratioText(double value) => '${(value * 100).toStringAsFixed(0)}%';
 String operationRatioText(double value, {required bool sell}) {
   if (sell && value >= 0.995) return '100%（全部）';
   return ratioText(value);
+}
+
+int homeTaskScore(FundAnalysis analysis) {
+  if (analysis.sellRatio >= 0.995 || analysis.buyRatio >= 0.30) return 100;
+  if (analysis.sellRatio > 0 || analysis.buyRatio > 0) return 80;
+  if (analysis.downsideRiskText == '高') return 55;
+  if (analysis.decision.temperatureScore.abs() >= 40) return 45;
+  return 10;
+}
+
+String homeActionText(FundAnalysis analysis) {
+  if (analysis.sellRatio > 0 && analysis.buyRatio <= 0) {
+    return '卖出当前持仓 ${operationRatioText(analysis.sellRatio, sell: true)}';
+  }
+  if (analysis.buyRatio > 0 && analysis.sellRatio <= 0) {
+    return '买入计划仓位 ${operationRatioText(analysis.buyRatio, sell: false)}';
+  }
+  return analysis.action;
+}
+
+String pendingBuyInlineText(PortfolioItem item) {
+  if (item.pendingAmount <= 0) return '';
+  if (item.pendingBuys.isEmpty) return '买入确认中 ${money(item.pendingAmount)}：确认后才参与涨跌。';
+  if (item.pendingBuys.length == 1) return '买入确认中 ${money(item.pendingAmount)}：${pendingOrderExplain(item.pendingBuys.first)}';
+  final next = item.pendingBuys.first;
+  return '买入确认中 ${money(item.pendingAmount)}：共 ${item.pendingBuys.length} 笔，最近一笔${pendingOrderExplain(next)}';
+}
+
+String pendingOrderExplain(PendingBuy order) {
+  final timing = order.beforeCutoff ? '15:00 前买入' : '15:00 后买入';
+  final basis = order.beforeCutoff ? '${order.confirmDate} 晚间净值' : '下一交易日 ${order.confirmDate} 净值';
+  return '$timing，预计按$basis确认，确认后才参与涨跌。';
+}
+
+String pendingOrderCalendarLine(PendingBuy order) {
+  final freeDate = feeFreeDateFromConfirmText(order.confirmDate);
+  final freeText = freeDate.isEmpty ? '' : '，满 7 天日 $freeDate';
+  return '${money(order.amount)}：${pendingOrderExplain(order)}$freeText';
+}
+
+String homePendingText(List<PortfolioItem> items) {
+  final pendingItems = items.where((item) => item.pendingAmount > 0).toList();
+  if (pendingItems.isEmpty) return '没有确认中的买入资金。';
+  if (pendingItems.length == 1) return pendingBuyInlineText(pendingItems.first);
+  final total = pendingItems.fold<double>(0, (sum, item) => sum + item.pendingAmount);
+  final orders = pendingItems.fold<int>(0, (sum, item) => sum + item.pendingBuys.length);
+  final nextOrder = pendingItems.expand((item) => item.pendingBuys).toList()
+    ..sort((a, b) => compareDateText(a.confirmDate, b.confirmDate));
+  final nextDate = nextOrder.isEmpty ? '' : nextOrder.first.confirmDate;
+  return '买入确认中 ${money(total)}：共 $orders 笔，最近 $nextDate 确认，确认后才参与涨跌。';
+}
+
+String beginnerReasonShort(FundAnalysis analysis) {
+  final reasons = <String>[];
+  reasons.add(factorShortText('板块资金', analysis.decision.valuationTone));
+  reasons.add(factorShortText('尾盘动向', analysis.decision.trendTone));
+  reasons.add(factorShortText('后面几天', analysis.decision.durationTone));
+  return reasons.join(' + ');
+}
+
+String factorShortText(String label, String tone) {
+  if (label == '板块资金') {
+    if (tone == 'good') return '板块资金流入';
+    if (tone == 'bad') return '板块资金流出';
+    return '板块资金不明';
+  }
+  if (label == '尾盘动向') {
+    if (tone == 'good') return '尾盘有承接';
+    if (tone == 'bad') return '尾盘没抢筹';
+    return '尾盘方向一般';
+  }
+  if (label == '后面几天') {
+    if (tone == 'good') return '后面几天偏强';
+    if (tone == 'bad') return '后面几天风险高';
+    return '后面几天震荡';
+  }
+  return tone == 'good' ? '$label偏好' : tone == 'bad' ? '$label偏弱' : '$label中性';
+}
+
+String whyNotBuyText(FundAnalysis analysis) {
+  if (analysis.sellRatio > 0) {
+    return '为什么今天不买：不是判断一定暴跌，而是现在风险收益不划算。场外基金买入后 7 天内卖出成本高，等资金回流和尾盘承接更清楚再动。';
+  }
+  if (analysis.downsideRiskText == '高') {
+    return '为什么今天不买：后面几天下跌风险偏高，现在追进去容易被回撤打到，先保留现金更舒服。';
+  }
+  return '为什么今天不买：信号还没站到同一边，买进去以后 7 天内想卖成本高，等更明确的资金确认。';
+}
+
+String optimisticScenarioText(FundAnalysis analysis) {
+  if (analysis.buyRatio > 0) {
+    return '板块资金继续回流，核心重仓股尾盘承接变强，明天走出反弹。';
+  }
+  return '资金回流，ETF 折溢价保持平稳，明天跌幅收窄或小反弹。';
+}
+
+String normalScenarioText(FundAnalysis analysis) {
+  return '${analysis.tomorrowTrend}，${analysis.futureDaysText}，按今天建议控制仓位。';
+}
+
+String pessimisticScenarioText(FundAnalysis analysis) {
+  if (analysis.sellRatio >= 0.995) {
+    return '板块继续流出，核心股同步走弱，明天大跌并拖出 1-2 天回撤。';
+  }
+  return '板块继续流出，尾盘承接失败，回撤扩大 1%-2%。';
+}
+
+double? estimatedHoldingContribution(StockHolding item) {
+  if (item.contributionPct != null) return item.contributionPct;
+  if (item.changePct == null) return null;
+  return item.holdingPct * item.changePct! / 100;
+}
+
+String announcementReflectionText(Announcement item) {
+  final text = '${item.title} ${item.category} ${item.sentiment}';
+  if (item.sentiment == '负面' && item.severity >= 80) return '尚未完全反映，明天开盘仍要验证抛压。';
+  if (item.sentiment == '正面' && item.severity >= 80) {
+    if (containsAnyKeyword(text, const ['分红', '回购', '增持', '回报'])) return '可能已部分反映，继续看明天是否放量。';
+    return '尚未完全反映，明天看股价是否继续回应。';
+  }
+  if (containsAnyKeyword(text, const ['季度报告', '年度报告', '经营数据', '业绩', '财报'])) {
+    return '需要明天开盘验证，重点看龙头股和成交量。';
+  }
+  if (containsAnyKeyword(text, const ['独立董事', '信息披露', '日常关联交易', '章程', '制度'])) {
+    return '影响较弱，通常不改变短线判断。';
+  }
+  return '需要行情验证，先看明天开盘和成交量。';
 }
 
 List<double> dailyReturns(List<NavPoint> points) {
