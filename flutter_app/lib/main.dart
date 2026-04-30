@@ -494,11 +494,9 @@ class _FundDetailPageState extends State<FundDetailPage> {
   @override
   Widget build(BuildContext context) {
     final currentValue = positionValue(_item);
-    final buyAmount = currentValue * _analysis.buyRatio;
-    final sellAmount = currentValue * _analysis.sellRatio;
     final reasonSide = actionReasonSide(_analysis.action, _analysis.buyRatio, _analysis.sellRatio);
-    final showBuyReason = reasonSide == 'buy' && buyAmount > 0.01;
-    final showSellReason = reasonSide == 'sell' && sellAmount > 0.01;
+    final showBuyReason = reasonSide == 'buy' && _analysis.buyRatio > 0.001;
+    final showSellReason = reasonSide == 'sell' && _analysis.sellRatio > 0.001;
     final showBuyAmount = showBuyReason;
     final showSellAmount = showSellReason;
     final hasOperation = showBuyAmount || showSellAmount;
@@ -600,9 +598,9 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   if (hasOperation)
                     Row(
                       children: [
-                        if (showBuyAmount) Expanded(child: _Metric(label: '建议买入', value: money(buyAmount), color: AppColors.red)),
+                        if (showBuyAmount) Expanded(child: _Metric(label: '建议买入比例', value: operationRatioText(_analysis.buyRatio, sell: false), color: AppColors.red)),
                         if (showBuyAmount && showSellAmount) const SizedBox(width: 12),
-                        if (showSellAmount) Expanded(child: _Metric(label: '建议卖出', value: money(sellAmount), color: AppColors.green)),
+                        if (showSellAmount) Expanded(child: _Metric(label: '建议卖出比例', value: operationRatioText(_analysis.sellRatio, sell: true), color: AppColors.green)),
                       ],
                     )
                   else
@@ -1462,7 +1460,7 @@ class _BeginnerPill extends StatelessWidget {
         children: [
           Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
-          Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: color, fontSize: 16, fontWeight: FontWeight.w900)),
+          Text(value, maxLines: 2, overflow: TextOverflow.visible, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w900, height: 1.12)),
         ],
       ),
     );
@@ -3008,7 +3006,7 @@ class FundService {
     );
     final holdingCycleState = t7Risk
         ? hasWeekEventRisk
-            ? '虽然明天可能有反弹，但未来一周还有事件扰动，场外基金现在买进去并不划算。'
+            ? '即使明天有反弹，未来一周还有事件扰动，场外基金现在买进去并不划算。'
             : '这轮更像短线波动，持有未满 7 天就卖出会被手续费吃掉，不适合做短线博弈。'
         : feeWindowSnapshot.headline;
     final holdingCycleTone = t7Risk ? 'bad' : feeWindowSnapshot.tone;
@@ -3029,10 +3027,28 @@ class FundService {
     } else if (atr14 <= 1.2) {
       strongBuyTrigger -= 1;
     }
+    final decisionReady = shouldLockTomorrowPrediction(DateTime.now());
+    final strongBearCase = decisionReady &&
+        confidence != '低' &&
+        confidence != '极低' &&
+        totalScore <= reduceTrigger - 3 &&
+        duration.tone == 'bad' &&
+        downsideRiskText == '高' &&
+        (forward.fundFlowScore <= -2 || forward.tailScore <= -2 || smartMoney.score <= -2 || etfPremiumHigh || majorNegative != null);
+    final strongBullCase = decisionReady &&
+        confidence != '低' &&
+        confidence != '极低' &&
+        totalScore >= strongBuyTrigger + 3 &&
+        duration.tone == 'good' &&
+        downsideRiskText == '低' &&
+        !t7Risk &&
+        !macroEventRisk &&
+        !etfPremiumHigh &&
+        smartMoney.score >= 0 &&
+        resonance.score >= 0;
 
     var buyRatio = 0.0;
     var sellRatio = 0.0;
-    final decisionReady = shouldLockTomorrowPrediction(DateTime.now());
     var action = decisionReady ? '今天先不动' : '14:55给最终建议';
     if (totalScore <= reduceTrigger || duration.tone == 'bad' && (bias20 > 5 || majorNegative != null || resonance.score < 0)) {
       action = isHeavyPosition ? '今天先减一点' : '今天先降一点仓位';
@@ -3071,7 +3087,7 @@ class FundService {
     if (forward.volumeScore <= -2 && todayPct > 0.15) {
       buyRatio = 0.0;
       sellRatio = max(sellRatio, isHeavyPosition ? 0.10 : 0.06);
-      action = '缩量上涨，先锁利润';
+      action = '缩量上涨，先降风险';
     }
     if (confidence == '低' && totalScore.abs() < 4) {
       buyRatio = 0.0;
@@ -3098,24 +3114,37 @@ class FundService {
     if (resonance.score < 0) buyRatio = min(buyRatio, 0.03);
     if (duration.tone == 'bad') buyRatio = min(buyRatio, 0.04);
     if (isLiquor && confidence == '低') buyRatio = min(buyRatio, 0.03);
-    buyRatio = buyRatio.clamp(0.0, buyCap).toDouble();
-    sellRatio = sellRatio.clamp(0.0, sellCap).toDouble();
+    if (strongBearCase) {
+      buyRatio = 0.0;
+      sellRatio = 1.0;
+      action = '今天建议全部卖出';
+    } else if (strongBullCase) {
+      sellRatio = 0.0;
+      buyRatio = max(buyRatio, 0.30);
+      action = '今天建议大额买入';
+    }
+    buyRatio = buyRatio.clamp(0.0, strongBullCase ? 0.30 : buyCap).toDouble();
+    sellRatio = sellRatio.clamp(0.0, strongBearCase ? 1.0 : sellCap).toDouble();
     if (!decisionReady) {
       buyRatio = 0.0;
       sellRatio = 0.0;
       action = '14:55给最终建议';
     }
     if (sellRatio > 0 && buyRatio == 0 && confidence != '极低') {
-      tomorrowTrend = '明天可能下跌';
+      tomorrowTrend = strongBearCase ? '明天大概率会大跌' : '明天大概率会跌';
     } else if (buyRatio > 0 && sellRatio == 0 && totalScore < 2) {
-      tomorrowTrend = '明天可能上涨';
+      tomorrowTrend = strongBullCase ? '明天大概率会大涨' : '明天小概率会涨';
     }
 
     todayState = buildTodayDirectionText(todayPct: todayPct, totalScore: totalScore);
     if (buyRatio > 0 && sellRatio == 0) {
-      tomorrowTrend = '明天可能上涨';
+      tomorrowTrend = strongBullCase ? '明天大概率会大涨' : '明天大概率会涨';
     } else if (sellRatio > 0 && buyRatio == 0 && confidence != '极低') {
-      tomorrowTrend = totalScore <= -4 || duration.tone == 'bad' ? '明天可能下跌' : '明天小跌';
+      tomorrowTrend = strongBearCase
+          ? '明天大概率会大跌'
+          : totalScore <= -4 || duration.tone == 'bad'
+              ? '明天大概率会跌'
+              : '明天小概率会跌';
     }
 
     final macroScore = ((market.overnight?.score ?? 0) + marketBackdropScore + breadthScore).toDouble();
@@ -3138,24 +3167,28 @@ class FundService {
                         : '不冷不热';
     final decisionSummary = buyRatio == 0 && sellRatio == 0
         ? t7Risk
-            ? '就算明天可能反弹，这里也不值得为了短线波动去承担 7 天手续费约束。'
+            ? '就算明天有反弹，这里也不值得为了短线波动去承担 7 天手续费约束。'
             : macroEventRisk
             ? '明天前后有高影响事件，宁愿少赚一点，也先别在今晚把仓位抬太高。'
             : confidence == '极低'
             ? '当前多空分歧太大，今天先观望，不要硬做判断。'
             : '今天先观望，等更明确的止跌或放量信号。'
+        : strongBullCase
+            ? '今天多个真实数据同时转强，适合大额买入，但仍建议分批执行。'
+        : strongBearCase
+            ? '明天大跌和后续回落风险同时升高，今天以退出防守为主。'
         : buyRatio > 0 && sellRatio == 0
-            ? '今天更适合小额试探，不适合一把追进去。'
+            ? '今天更适合按比例小额试探，不适合一把追进去。'
         : sellRatio > 0 && buyRatio == 0
-            ? '今天更适合先降一小部分仓位，把回撤风险压住。'
+            ? '今天更适合先按比例降一小部分仓位，把回撤风险压住。'
             : '今天以控仓为主，买卖都只做小幅调整。';
     final amountRule = buyRatio == 0 && sellRatio == 0
-        ? '当前持有 ${money(item.amount)}，今天先观望，不给具体买卖金额。'
+        ? '当前持有 ${money(item.amount)}，今天先观望，不给具体买卖比例。'
         : buyRatio > 0 && sellRatio == 0
-            ? '当前持有 ${money(item.amount)}，若按模型执行，可分批买入 ${money(item.amount * buyRatio)}。'
+            ? '若按模型执行，买入比例为 ${operationRatioText(buyRatio, sell: false)}，分批做，不一次打满。'
             : sellRatio > 0 && buyRatio == 0
-                ? '当前持有 ${money(item.amount)}，若按模型执行，可分批卖出 ${money(item.amount * sellRatio)}。'
-                : '当前持有 ${money(item.amount)}，若按模型执行，可小幅买入 ${money(item.amount * buyRatio)}，并同步卖出 ${money(item.amount * sellRatio)}。';
+                ? '若按模型执行，卖出当前持仓的 ${operationRatioText(sellRatio, sell: true)}。'
+                : '若按模型执行，买入比例 ${operationRatioText(buyRatio, sell: false)}，同时卖出当前持仓的 ${operationRatioText(sellRatio, sell: true)}。';
     final decision = DecisionModel(
       confidence: confidence == '中'
           ? '置信度：中'
@@ -3195,12 +3228,18 @@ class FundService {
     final todaySimpleText = sellRatio > 0
         ? '今天盘面偏防守：板块资金、尾盘承接或高影响事件里有风险信号，继续追容易被回撤打到。'
         : buyRatio > 0
-            ? '今天盘面有修复信号：资金和趋势没有继续恶化，可以只用小金额试探。'
+            ? strongBullCase
+                ? '今天盘面明显转强：板块资金、后面几天趋势和风险约束同时支持做多。'
+                : '今天盘面有修复信号：资金和趋势没有继续恶化，可以只用小比例试探。'
             : '今天盘面还没有给出清楚方向：资金、量能和尾盘表现没有站到同一边。';
     final tomorrowSimpleText = sellRatio > 0
-        ? '明天更要防回落；如果后面几天继续偏弱，先保住本金比多赚一点更重要。'
+        ? strongBearCase
+            ? '明天大概率会大跌，后面 1-2 天也偏弱，今天先退出能把风险降到最低。'
+            : '明天更要防回落；如果后面几天继续偏弱，先保住本金比多赚一点更重要。'
         : buyRatio > 0
-            ? '明天有继续反弹机会，但仍按分批来，不适合一次买满。'
+            ? strongBullCase
+                ? '明天大概率会大涨，后面 1-2 天也偏强，可以按大额比例分批买入。'
+                : '明天大概率会涨，但仍按分批来，不适合一次买满。'
             : '明天先看资金会不会继续流入；没有确认前，少动比乱动更稳。';
     final actionText = confidence == '极低'
         ? '新手建议：多空分歧太大，今天不硬猜，先观望。'
@@ -3213,31 +3252,37 @@ class FundService {
         : buyRatio > 0
             ? t7Risk
                 ? '新手建议：短线反弹不够划算，场外基金有 7 天手续费约束，今天不追。'
-                : '新手建议：可以小额分批买入，只试探，不一次性追价。'
+                : strongBullCase
+                    ? '新手建议：强信号才做大额买入，按比例分批执行，别一次梭哈。'
+                    : '新手建议：可以按小比例分批买入，只试探，不一次性追价。'
             : sellRatio > 0
-                ? '新手建议：先卖出一小部分，把回撤风险压住；不是清仓，是先防守。'
+                ? strongBearCase
+                    ? '新手建议：这不是普通减仓，是明天大跌风险很高时的退出防守。'
+                    : '新手建议：先卖出一小部分，把回撤风险压住；不是清仓，是先防守。'
                 : '新手建议：今天先不动，等更明确的止跌或放量确认。';
     final actionReason = '$plainTrendText\n\n$todaySimpleText\n\n$tomorrowSimpleText\n\n$actionText';
     final upperTriggerValue = recentResistance > decisionNav ? recentResistance : decisionNav * (1 + max(0.02, atr14 / 100));
     final lowerTriggerValue = recentSupport < decisionNav ? recentSupport : decisionNav * (1 - max(0.025, atr14 / 100));
     final battlePlan = GridBattlePlan(
       upperTrigger: upperTriggerValue.toStringAsFixed(4),
-      upperAction: sellRatio > 0 ? '触及后优先减仓 ${ratioText(max(sellRatio, 0.05))}，先把利润和仓位风险一起锁住。' : '触及后更适合分批止盈 5%，不追着高位继续加。',
+      upperAction: sellRatio > 0 ? '触及后优先减仓 ${operationRatioText(max(sellRatio, 0.05), sell: true)}，先把仓位风险压下来。' : '触及后更适合分批止盈 5%，不追着高位继续加。',
       currentValue: decisionNav.toStringAsFixed(4),
       currentZone: buyRatio > 0
-          ? '当前处在可试探区域，适合小额跟随，不适合一把冲进去。'
+          ? strongBullCase
+              ? '当前处在强势区域，适合大额分批跟随，但仍要控制节奏。'
+              : '当前处在可试探区域，适合小比例跟随，不适合一把冲进去。'
           : sellRatio > 0
               ? '当前更像高位整理区，重点是先防回落，不是继续追涨。'
               : '当前处在震荡观察区，先等资金把方向说清楚。',
       lowerTrigger: lowerTriggerValue.toStringAsFixed(4),
-      lowerAction: buyRatio > 0 ? '触及后优先加仓 ${ratioText(max(buyRatio, 0.05))}，按计划低吸，不抢反弹。' : '触及后可考虑低吸 10%，前提是资金没有继续恶化。',
+      lowerAction: buyRatio > 0 ? '触及后优先加仓 ${operationRatioText(max(buyRatio, 0.05), sell: false)}，按计划低吸，不抢反弹。' : '触及后可考虑低吸 10%，前提是资金没有继续恶化。',
     );
 
     final buyReason = buyRatio > 0
         ? [
-            '明天和后面几天仍有上涨机会，先用小金额试探更稳。',
+            strongBullCase ? '明天大概率会大涨，后面 1-2 天也偏强，所以可以提高买入比例。' : '明天和后面几天仍有上涨机会，先用小比例试探更稳。',
             forward.fundFlowText,
-            t7Risk ? '只是这波更像短线反弹，所以买入金额要压小。' : '$futureDaysText，$volatilityText，风险没有压过机会。',
+            t7Risk ? '只是这波更像短线反弹，所以买入比例要压小。' : '$futureDaysText，$volatilityText，风险没有压过机会。',
           ].join('\n')
         : [
             '现在不是舒服的买点，先别急着冲进去。',
@@ -3246,9 +3291,11 @@ class FundService {
           ].join('\n');
     final sellReason = sellRatio > 0
         ? [
-            majorNegative != null ? '${majorNegative.stockName}的负面消息还在压情绪，短线先别硬扛。' : (duration.tone == 'bad' ? '$futureDaysText，短线回调压力已经变大。' : '$tomorrowTrend，$downsideRiskText风险，先别把仓位压得太重。'),
+            strongBearCase
+                ? '明天大概率会大跌，后面 1-2 天也偏弱，今天先卖出全部持仓是为了躲开连续回撤。'
+                : majorNegative != null ? '${majorNegative.stockName}的负面消息还在压情绪，短线先别硬扛。' : (duration.tone == 'bad' ? '$futureDaysText，短线回调压力已经变大。' : '$tomorrowTrend，$downsideRiskText风险，先别把仓位压得太重。'),
             forward.volumeScore <= -1 ? '今天虽然还在涨，但成交量没跟上，新资金接力偏弱。' : '尾盘没有看到很强的抢筹，买盘接力还不够坚决。',
-            '如果你已经有浮盈，先卖出 ${ratioText(sellRatio)} 左右更稳，先把利润装进口袋。',
+            '建议卖出当前持仓的 ${operationRatioText(sellRatio, sell: true)}，用比例控制风险，不再按金额提示。',
           ].join('\n')
         : [
             '现在还没到必须卖的时候。',
@@ -4803,7 +4850,7 @@ String formatClock(DateTime time) => '${time.hour.toString().padLeft(2, '0')}:${
 bool isDirectionLabel(String? text, {required bool today}) {
   if (text == null) return false;
   final prefix = today ? '今天' : '明天';
-  return RegExp('^$prefix(上涨|可能上涨|偏涨|小涨|震荡|小跌|偏跌|下跌|可能下跌)\$').hasMatch(text.trim());
+  return RegExp('^$prefix(上涨|大概率会涨|小概率会涨|大概率会大涨|偏涨|小涨|震荡|小跌|偏跌|下跌|大概率会跌|小概率会跌|大概率会大跌)\$').hasMatch(text.trim());
 }
 
 String lockedDirectionOrLive(String? locked, String live, {required bool today}) {
@@ -4864,7 +4911,7 @@ String compactDecisionText(String label, String value, String tone) {
       if (tone == 'bad') return '当前位置接近压力位，短线缺少上行动能。';
       return '趋势还没完全站稳，明天先看资金能否继续跟。';
     case '后面几天':
-      if (clean.contains('回调')) return '短期可能回调 1-2 天，先防守。';
+      if (clean.contains('回调')) return '短期大概率回调 1-2 天，先防守。';
       if (clean.contains('上涨') || clean.contains('修复')) return '短期仍有修复空间，但要看量能。';
       return '后面几天更像震荡，别把一天波动看太重。';
     case 'T+7 安全垫':
@@ -4911,18 +4958,23 @@ String buildTodayDirectionText({required double todayPct, required int totalScor
 
 String buildTomorrowDirectionText({required int totalScore, required String confidence}) {
   if (confidence == '极低') return '明天震荡';
-  if (totalScore >= 5) return '明天可能上涨';
-  if (totalScore <= -5) return '明天可能下跌';
-  if (totalScore >= 2) return '明天小涨';
-  if (totalScore <= -2) return '明天小跌';
+  final enoughData = confidence == '中' || confidence == '中低';
+  if (totalScore >= 7 && enoughData) return '明天大概率会大涨';
+  if (totalScore <= -7 && enoughData) return '明天大概率会大跌';
+  if (totalScore >= 4 && enoughData) return '明天大概率会涨';
+  if (totalScore <= -4 && enoughData) return '明天大概率会跌';
+  if (totalScore >= 2) return '明天小概率会涨';
+  if (totalScore <= -2) return '明天小概率会跌';
   return '明天震荡';
 }
 
 String futureDaysLabel({required DurationSignal duration, required int totalScore}) {
   final days = RegExp(r'\d+(?:-\d+)?\s*天').firstMatch(duration.summary)?.group(0)?.replaceAll(' ', '');
   final dayText = days ?? (duration.tone == 'good' ? '2-3天' : duration.tone == 'bad' ? '1-2天' : '1-2天');
-  if (duration.tone == 'good' || totalScore >= 4) return '可能涨$dayText';
-  if (duration.tone == 'bad' || totalScore <= -4) return '可能跌$dayText';
+  if (duration.tone == 'good' && totalScore >= 4) return '大概率涨$dayText';
+  if (duration.tone == 'good' || totalScore >= 2) return '小概率涨$dayText';
+  if (duration.tone == 'bad' && totalScore <= -4) return '大概率跌$dayText';
+  if (duration.tone == 'bad' || totalScore <= -2) return '小概率跌$dayText';
   return '震荡$dayText';
 }
 
@@ -4955,13 +5007,13 @@ String toneFromDirectionText(String text) {
 
 String beginnerActionText(FundAnalysis analysis) {
   if (analysis.buyRatio > 0 && analysis.sellRatio == 0) {
-    return '这不是让你满仓追进去，而是说明上涨机会大于风险。可以按建议金额小额分批买，买完也要看后面几天是否继续放量。';
+    return '这不是让你满仓追进去，而是说明上涨机会大于风险。可以按建议比例分批买，买完也要看后面几天是否继续放量。';
   }
   if (analysis.sellRatio > 0 && analysis.buyRatio == 0) {
     return '卖出不是清仓逃跑，而是先把一小部分风险降下来。后面几天偏弱、波动变大或下跌风险偏高时，先减一点会更稳。';
   }
   if (analysis.downsideRiskText == '高') {
-    return '现在最重要的是别追。即使今天有反弹，后面几天也可能回落，等风险降下来再买更舒服。';
+    return '现在最重要的是别追。即使今天有反弹，后面几天也有回落风险，等风险降下来再买更舒服。';
   }
   return '现在还没有强买点，也没有强卖点。新手最适合先不动，等明天方向、成交量和资金流再确认。';
 }
@@ -4983,11 +5035,11 @@ Announcement classifyAnnouncement(Map<String, dynamic> row, StockHolding holding
       category: '重大负面',
       severity: managerRisk ? 95 : 88,
       rank: 1,
-      reason: '核心管理层或公司治理重大风险事件，可能影响短期情绪和估值。',
+      reason: '核心管理层或公司治理重大风险事件，会影响短期情绪和估值。',
     );
   }
   if (positive) {
-    return Announcement(title: title, stockName: holding.name, sentiment: '正面', category: '重大正面', severity: 82, rank: 2, reason: '可能改善短期情绪，但要看股价是否提前反映。');
+    return Announcement(title: title, stockName: holding.name, sentiment: '正面', category: '重大正面', severity: 82, rank: 2, reason: '有机会改善短期情绪，但要看股价是否提前反映。');
   }
   if (report) {
     return Announcement(title: title, stockName: holding.name, sentiment: '经营数据', category: '财报/经营数据', severity: 70, rank: 3, reason: '直接影响龙头业绩预期，是基金判断的重要数据。');
@@ -5142,9 +5194,10 @@ FeeWindowSnapshot buildFeeWindowSnapshot(PortfolioItem item, double latestNav) {
   final progress = progressWeight > 0 ? (progressTotal / progressWeight).clamp(0.0, 1.0) : null;
   final unknownText = item.untrackedAmount > 0 ? ' 另有历史持仓 ${money(item.untrackedAmount)} 缺少买入日记录，这部分今天先不乱猜是否已满 7 天。' : '';
   if (freeAmount > 0 && frozenAmount > 0) {
+    final freeRatio = freeAmount / max(1, freeAmount + frozenAmount);
     return FeeWindowSnapshot(
       headline: '部分份额受限：已有 ${money(freeAmount)} 可免手续费卖出，另有 ${money(frozenAmount)} 还需再等 ${nearestDays ?? 0} 天。',
-      detail: '今天若只想减仓，优先把卖出金额控制在 ${money(freeAmount)} 以内，会更稳。$unknownText',
+      detail: '今天若只想减仓，优先卖出已满 7 天的 ${ratioText(freeRatio)} 以内，会更稳。$unknownText',
       tone: 'warn',
       progress: progress,
     );
@@ -5152,7 +5205,7 @@ FeeWindowSnapshot buildFeeWindowSnapshot(PortfolioItem item, double latestNav) {
   if (frozenAmount > 0) {
     return FeeWindowSnapshot(
       headline: '手续费锁定期：当前已记录份额里，还有 ${money(frozenAmount)} 需要再等 ${nearestDays ?? 0} 天。',
-      detail: '如果今天强行卖出，这部分仍可能被 1.5% 惩罚性手续费咬掉利润。更适合先熬过解冻期再动。$unknownText',
+      detail: '如果今天强行卖出，这部分仍会被 1.5% 惩罚性手续费影响收益。更适合先熬过解冻期再动。$unknownText',
       tone: 'bad',
       progress: progress,
     );
@@ -6155,6 +6208,11 @@ double computeKdjJ(List<NavPoint> points, int period) {
 
 String ratioText(double value) => '${(value * 100).toStringAsFixed(0)}%';
 
+String operationRatioText(double value, {required bool sell}) {
+  if (sell && value >= 0.995) return '100%（全部）';
+  return ratioText(value);
+}
+
 List<double> dailyReturns(List<NavPoint> points) {
   final rows = <double>[];
   for (var i = 1; i < points.length; i += 1) {
@@ -6210,9 +6268,9 @@ class ForecastVisual {
 
 ForecastVisual forecastVisual(String text) {
   final lower = text.trim();
-  final storm = containsAnyKeyword(lower, const ['回落风险很大', '风险不可控', '低开低走', '大跌', '主跌', '盘面转弱', '过热', '先保护本金', '今天要防回落', '涨得有点快', '偏跌', '下跌', '可能下跌']);
+  final storm = containsAnyKeyword(lower, const ['回落风险很大', '风险不可控', '低开低走', '大跌', '主跌', '盘面转弱', '过热', '先保护本金', '今天要防回落', '涨得有点快', '偏跌', '下跌', '大概率会跌', '小概率会跌']);
   final weak = containsAnyKeyword(lower, const ['偏弱', '小跌', '回落', '走弱', '缩量上涨', '方向不明', '震荡不明', '看不清', '分歧', '观望', '先别着急', '今天先别急']);
-  final strong = containsAnyKeyword(lower, const ['把握更大', '高开高走', '主升', '大涨', '明显转暖', '盘面偏强', '大概率还会走强', '继续慢慢走强', '可能上涨', '上涨']);
+  final strong = containsAnyKeyword(lower, const ['把握更大', '高开高走', '主升', '大涨', '明显转暖', '盘面偏强', '大概率还会走强', '继续慢慢走强', '大概率会涨', '小概率会涨', '上涨']);
   final warm = containsAnyKeyword(lower, const ['偏涨', '小涨', '转强', '走高', '反弹', '企稳', '偏暖', '小幅走高', '盘面转暖', '有一点转强', '可以看多一点', '继续小涨']);
   if (storm) {
     return ForecastVisual(
@@ -6278,8 +6336,8 @@ Color signalColor(String text) {
 }
 
 int predictionDirectionFromText(String text) {
-  if (containsAnyKeyword(text, const ['把握更大', '走高机会', '上涨', '可能上涨', '偏涨', '小涨', '偏强', '转强', '修复', '买入', '加仓', '低吸', '试探', '走强', '继续小涨', '看多一点'])) return 1;
-  if (containsAnyKeyword(text, const ['回落风险', '下跌', '可能下跌', '偏跌', '小跌', '偏弱', '低开承压', '走弱', '回调', '冲高回落', '先回落', '减仓', '小幅减', '锁利润', '低开低走', '面临回落', '今天要防回落', '涨得有点快'])) return -1;
+  if (containsAnyKeyword(text, const ['把握更大', '走高机会', '上涨', '大概率会涨', '小概率会涨', '偏涨', '小涨', '偏强', '转强', '修复', '买入', '加仓', '低吸', '试探', '走强', '继续小涨', '看多一点'])) return 1;
+  if (containsAnyKeyword(text, const ['回落风险', '下跌', '大概率会跌', '小概率会跌', '偏跌', '小跌', '偏弱', '低开承压', '走弱', '回调', '冲高回落', '先回落', '减仓', '小幅减', '锁利润', '低开低走', '面临回落', '今天要防回落', '涨得有点快'])) return -1;
   return 0;
 }
 
