@@ -530,7 +530,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                       Expanded(
                         child: PredictionMetric(
                           label: '今天',
-                          locked: _analysis.todayLockedAt.isNotEmpty,
+                          locked: false,
                           value: _analysis.todayState,
                           color: signalColor(_analysis.todayState),
                         ),
@@ -538,7 +538,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                       Expanded(
                         child: PredictionMetric(
                           label: '明天',
-                          locked: _analysis.tomorrowLockedAt.isNotEmpty,
+                          locked: false,
                           value: _analysis.tomorrowTrend,
                           color: signalColor(_analysis.tomorrowTrend),
                         ),
@@ -1010,6 +1010,7 @@ class PredictionMetric extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final visual = forecastVisual(value);
+    final subtitle = predictionSubtitle(label, value);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1040,7 +1041,7 @@ class PredictionMetric extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    visual.subtitle,
+                    subtitle,
                     style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w700, height: 1.3),
                   ),
                 ],
@@ -1287,7 +1288,7 @@ class DecisionModelCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(child: Text('14:45 推演 · 14:50 决策', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+              const Expanded(child: Text('14:55 最终决策依据', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
             ],
           ),
           const SizedBox(height: 4),
@@ -2276,17 +2277,11 @@ class FundService {
   Future<FundAnalysis> _applyLocks(String code, FundAnalysis live) async {
     final now = DateTime.now();
     var lock = await _loadLockState(code, live.analysisDate);
-    var changed = false;
-    if (shouldLockTodayPrediction(now) && !lock.hasTodayLock) {
-      lock = lock.captureToday(live, '09:45');
-      changed = true;
-    }
     if (shouldLockTomorrowPrediction(now) && !lock.hasTomorrowLock) {
-      lock = lock.captureTomorrow(live, '14:45');
-      changed = true;
+      lock = lock.captureTomorrow(live, '14:55');
+      await _saveLockState(lock);
     }
-    if (changed) await _saveLockState(lock);
-    return lock.applyTo(live);
+    return live;
   }
 
   Future<AnalysisLockState> _loadLockState(String code, String date) async {
@@ -3037,7 +3032,8 @@ class FundService {
 
     var buyRatio = 0.0;
     var sellRatio = 0.0;
-    var action = shouldLockTomorrowPrediction(DateTime.now()) ? '不动，等确认' : '等待14:45确认';
+    final decisionReady = shouldLockTomorrowPrediction(DateTime.now());
+    var action = decisionReady ? '今天先不动' : '14:55给最终建议';
     if (totalScore <= reduceTrigger || duration.tone == 'bad' && (bias20 > 5 || majorNegative != null || resonance.score < 0)) {
       action = isHeavyPosition ? '今天先减一点' : '今天先降一点仓位';
       sellRatio = item.amount >= 10000 ? 0.10 : 0.06;
@@ -3080,13 +3076,13 @@ class FundService {
     if (confidence == '低' && totalScore.abs() < 4) {
       buyRatio = 0.0;
       sellRatio = 0.0;
-      action = '不动，等实时数据';
+      action = decisionReady ? '今天观望，不买不卖' : '14:55给最终建议';
     }
     if (confidence == '极低') {
       buyRatio = 0.0;
       sellRatio = 0.0;
       tomorrowTrend = '明天震荡';
-      action = '风险不可控，今日观望';
+      action = decisionReady ? '风险不清，今天观望' : '14:55给最终建议';
     }
     if (isHeavyPosition && totalScore < 0) {
       sellRatio = max(sellRatio, 0.05);
@@ -3104,19 +3100,22 @@ class FundService {
     if (isLiquor && confidence == '低') buyRatio = min(buyRatio, 0.03);
     buyRatio = buyRatio.clamp(0.0, buyCap).toDouble();
     sellRatio = sellRatio.clamp(0.0, sellCap).toDouble();
+    if (!decisionReady) {
+      buyRatio = 0.0;
+      sellRatio = 0.0;
+      action = '14:55给最终建议';
+    }
     if (sellRatio > 0 && buyRatio == 0 && confidence != '极低') {
-      tomorrowTrend = '明天偏跌';
+      tomorrowTrend = '明天可能下跌';
     } else if (buyRatio > 0 && sellRatio == 0 && totalScore < 2) {
-      tomorrowTrend = '明天偏涨';
+      tomorrowTrend = '明天可能上涨';
     }
 
-    if (sellRatio > 0 && buyRatio == 0) {
-      todayState = '今天偏跌';
-    } else if (buyRatio > 0 && sellRatio == 0) {
-      todayState = todayPct < -0.15 ? '今天小跌' : '今天偏涨';
-      tomorrowTrend = '明天偏涨';
-    } else {
-      todayState = buildTodayDirectionText(todayPct: todayPct, totalScore: totalScore);
+    todayState = buildTodayDirectionText(todayPct: todayPct, totalScore: totalScore);
+    if (buyRatio > 0 && sellRatio == 0) {
+      tomorrowTrend = '明天可能上涨';
+    } else if (sellRatio > 0 && buyRatio == 0 && confidence != '极低') {
+      tomorrowTrend = totalScore <= -4 || duration.tone == 'bad' ? '明天可能下跌' : '明天小跌';
     }
 
     final macroScore = ((market.overnight?.score ?? 0) + marketBackdropScore + breadthScore).toDouble();
@@ -4311,9 +4310,9 @@ class FundAnalysis {
   final String todayLockedAt;
   final String tomorrowLockedAt;
 
-  String get todayLockText => todayLockedAt.isEmpty ? '09:45 前预判' : '09:45 已锁定';
-  String get tomorrowLockText => tomorrowLockedAt.isEmpty ? '14:45 前推演' : '14:45 已锁定';
-  String get lockHintText => tomorrowLockedAt.isNotEmpty ? '大盘定调和明日推演已锁定' : '大盘定调已锁定';
+  String get todayLockText => '实时预判';
+  String get tomorrowLockText => tomorrowLockedAt.isEmpty ? '14:55 前滚动推演' : '14:55 决策已保存';
+  String get lockHintText => '走势预判随数据刷新，14:55 保存决策快照';
   bool get officialNavUpdated => realtimeStatus.contains('实际净值');
   String get updateMetricLabel => officialNavUpdated ? '更新状态' : '更新时间';
   String get updateMetricValue {
@@ -4804,7 +4803,7 @@ String formatClock(DateTime time) => '${time.hour.toString().padLeft(2, '0')}:${
 bool isDirectionLabel(String? text, {required bool today}) {
   if (text == null) return false;
   final prefix = today ? '今天' : '明天';
-  return RegExp('^$prefix(偏涨|小涨|震荡|小跌|偏跌)\$').hasMatch(text.trim());
+  return RegExp('^$prefix(上涨|可能上涨|偏涨|小涨|震荡|小跌|偏跌|下跌|可能下跌)\$').hasMatch(text.trim());
 }
 
 String lockedDirectionOrLive(String? locked, String live, {required bool today}) {
@@ -4901,17 +4900,19 @@ String actionReasonSide(String action, double buyRatio, double sellRatio) {
 }
 
 String buildTodayDirectionText({required double todayPct, required int totalScore}) {
-  if (todayPct >= 0.45 || totalScore >= 4) return '今天偏涨';
-  if (todayPct <= -0.45 || totalScore <= -4) return '今天偏跌';
-  if (todayPct >= 0.15 || totalScore >= 2) return '今天小涨';
-  if (todayPct <= -0.15 || totalScore <= -2) return '今天小跌';
+  if (todayPct >= 0.45) return '今天上涨';
+  if (todayPct <= -0.45) return '今天下跌';
+  if (todayPct >= 0.15) return '今天小涨';
+  if (todayPct <= -0.15) return '今天小跌';
+  if (totalScore >= 4) return '今天偏涨';
+  if (totalScore <= -4) return '今天偏跌';
   return '今天震荡';
 }
 
 String buildTomorrowDirectionText({required int totalScore, required String confidence}) {
   if (confidence == '极低') return '明天震荡';
-  if (totalScore >= 5) return '明天偏涨';
-  if (totalScore <= -5) return '明天偏跌';
+  if (totalScore >= 5) return '明天可能上涨';
+  if (totalScore <= -5) return '明天可能下跌';
   if (totalScore >= 2) return '明天小涨';
   if (totalScore <= -2) return '明天小跌';
   return '明天震荡';
@@ -4947,8 +4948,8 @@ String downsideRiskLabel({
 }
 
 String toneFromDirectionText(String text) {
-  if (text.contains('偏涨') || text.contains('小涨')) return 'good';
-  if (text.contains('偏跌') || text.contains('小跌')) return 'bad';
+  if (text.contains('上涨') || text.contains('偏涨') || text.contains('小涨')) return 'good';
+  if (text.contains('下跌') || text.contains('偏跌') || text.contains('小跌')) return 'bad';
   return 'warn';
 }
 
@@ -5875,7 +5876,7 @@ bool shouldLockTodayPrediction(DateTime now) {
 
 bool shouldLockTomorrowPrediction(DateTime now) {
   if (!isFundTradingDay(now)) return false;
-  return now.hour * 60 + now.minute >= 14 * 60 + 45;
+  return now.hour * 60 + now.minute >= 14 * 60 + 55;
 }
 
 (String, String, String, String) overnightConfig(String theme) {
@@ -6209,9 +6210,9 @@ class ForecastVisual {
 
 ForecastVisual forecastVisual(String text) {
   final lower = text.trim();
-  final storm = containsAnyKeyword(lower, const ['回落风险很大', '风险不可控', '低开低走', '大跌', '主跌', '盘面转弱', '过热', '先保护本金', '今天要防回落', '涨得有点快', '偏跌']);
+  final storm = containsAnyKeyword(lower, const ['回落风险很大', '风险不可控', '低开低走', '大跌', '主跌', '盘面转弱', '过热', '先保护本金', '今天要防回落', '涨得有点快', '偏跌', '下跌', '可能下跌']);
   final weak = containsAnyKeyword(lower, const ['偏弱', '小跌', '回落', '走弱', '缩量上涨', '方向不明', '震荡不明', '看不清', '分歧', '观望', '先别着急', '今天先别急']);
-  final strong = containsAnyKeyword(lower, const ['把握更大', '高开高走', '主升', '大涨', '明显转暖', '盘面偏强', '大概率还会走强', '继续慢慢走强']);
+  final strong = containsAnyKeyword(lower, const ['把握更大', '高开高走', '主升', '大涨', '明显转暖', '盘面偏强', '大概率还会走强', '继续慢慢走强', '可能上涨', '上涨']);
   final warm = containsAnyKeyword(lower, const ['偏涨', '小涨', '转强', '走高', '反弹', '企稳', '偏暖', '小幅走高', '盘面转暖', '有一点转强', '可以看多一点', '继续小涨']);
   if (storm) {
     return ForecastVisual(
@@ -6253,6 +6254,18 @@ ForecastVisual forecastVisual(String text) {
   );
 }
 
+String predictionSubtitle(String label, String text) {
+  final direction = predictionDirectionFromText(text);
+  if (label == '今天') {
+    if (direction > 0) return '今天实际走强，收益正在增加';
+    if (direction < 0) return '今天实际走弱，先看尾盘承接';
+    return '今天波动不大，还没走出方向';
+  }
+  if (direction > 0) return '看明天能不能继续放量';
+  if (direction < 0) return '明天先防继续回落';
+  return '明天方向不明，等资金确认';
+}
+
 String forecastBrief(String text) {
   final visual = forecastVisual(text);
   return '${visual.title}，${visual.subtitle}';
@@ -6265,8 +6278,8 @@ Color signalColor(String text) {
 }
 
 int predictionDirectionFromText(String text) {
-  if (containsAnyKeyword(text, const ['把握更大', '走高机会', '偏涨', '小涨', '偏强', '转强', '修复', '买入', '加仓', '低吸', '试探', '走强', '继续小涨', '看多一点'])) return 1;
-  if (containsAnyKeyword(text, const ['回落风险', '偏跌', '小跌', '偏弱', '低开承压', '走弱', '回调', '冲高回落', '先回落', '减仓', '小幅减', '锁利润', '低开低走', '面临回落', '今天要防回落', '涨得有点快'])) return -1;
+  if (containsAnyKeyword(text, const ['把握更大', '走高机会', '上涨', '可能上涨', '偏涨', '小涨', '偏强', '转强', '修复', '买入', '加仓', '低吸', '试探', '走强', '继续小涨', '看多一点'])) return 1;
+  if (containsAnyKeyword(text, const ['回落风险', '下跌', '可能下跌', '偏跌', '小跌', '偏弱', '低开承压', '走弱', '回调', '冲高回落', '先回落', '减仓', '小幅减', '锁利润', '低开低走', '面临回落', '今天要防回落', '涨得有点快'])) return -1;
   return 0;
 }
 
