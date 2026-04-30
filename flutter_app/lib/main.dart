@@ -427,7 +427,7 @@ class HomeTodayTaskCard extends StatelessWidget {
           const SizedBox(height: 8),
           _TaskLine(icon: CupertinoIcons.moon_stars, text: navStatus),
           const SizedBox(height: 8),
-          _TaskLine(icon: CupertinoIcons.calendar_badge_clock, text: pendingText),
+          _TaskLine(icon: CupertinoIcons.calendar, text: pendingText),
         ],
       ),
     );
