@@ -1803,7 +1803,7 @@ class FundService {
 
     try {
       final board = await _loadThemeBoard(theme);
-      if (board != null && board.code.isNotEmpty) {
+      if (board != null && (board.code?.isNotEmpty ?? false)) {
         addTarget(IntradayProxyTarget(secid: '90.${board.code}', name: board.name));
       }
     } catch (_) {}
