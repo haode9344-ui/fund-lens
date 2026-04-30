@@ -618,7 +618,7 @@ class _FundDetailPageState extends State<FundDetailPage> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  GuideBox(title: '新人版说明', text: _analysis.actionReason),
+                  GuideBox(title: '新手结论', text: _analysis.actionReason),
                   if (showBuyReason) ...[
                     const SizedBox(height: 12),
                     ReasonBox(title: '买入原因', text: _analysis.buyReason, color: AppColors.red),
@@ -1297,20 +1297,15 @@ class DecisionModelCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(decision.summary, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, height: 1.35)),
           const SizedBox(height: 12),
-          _DecisionRow(label: '外围背景', value: decision.macroState, tone: decision.macroTone),
-          _DecisionRow(label: '板块资金', value: decision.valuationState, tone: decision.valuationTone),
-          _DecisionRow(label: '尾盘动向', value: decision.trendState, tone: decision.trendTone),
-          _DecisionRow(label: '聪明资金', value: decision.smartMoneyState, tone: decision.smartMoneyTone),
-          _DecisionRow(label: 'ETF折溢价', value: decision.etfPricingState, tone: decision.etfPricingTone),
-          _DecisionRow(label: '量价状态', value: decision.costDeviationText, tone: decision.deviationTone),
-          _DecisionRow(label: '趋势共振', value: decision.resonanceState, tone: decision.resonanceTone),
-          _DecisionRow(label: '后面几天', value: decision.durationState, tone: decision.durationTone),
-          _DecisionRow(label: 'T+7 安全垫', value: decision.holdingCycleState, tone: decision.holdingCycleTone),
-          _DecisionRow(label: '持仓动作', value: decision.gridTrigger, tone: decision.deviationTone),
-          if (decision.reason.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(decision.reason, style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700)),
-          ],
+          _DecisionRow(label: '大盘背景', value: compactDecisionText('外围背景', decision.macroState, decision.macroTone), tone: decision.macroTone),
+          _DecisionRow(label: '板块资金', value: compactDecisionText('板块资金', decision.valuationState, decision.valuationTone), tone: decision.valuationTone),
+          _DecisionRow(label: '尾盘动向', value: compactDecisionText('尾盘动向', decision.trendState, decision.trendTone), tone: decision.trendTone),
+          _DecisionRow(label: '聪明资金', value: compactDecisionText('聪明资金', decision.smartMoneyState, decision.smartMoneyTone), tone: decision.smartMoneyTone),
+          _DecisionRow(label: 'ETF折溢价', value: compactDecisionText('ETF折溢价', decision.etfPricingState, decision.etfPricingTone), tone: decision.etfPricingTone),
+          _DecisionRow(label: '量价状态', value: compactDecisionText('量价状态', decision.costDeviationText, decision.deviationTone), tone: decision.deviationTone),
+          _DecisionRow(label: '趋势位置', value: compactDecisionText('趋势共振', decision.resonanceState, decision.resonanceTone), tone: decision.resonanceTone),
+          _DecisionRow(label: '后面几天', value: compactDecisionText('后面几天', decision.durationState, decision.durationTone), tone: decision.durationTone),
+          _DecisionRow(label: 'T+7', value: compactDecisionText('T+7 安全垫', decision.holdingCycleState, decision.holdingCycleTone), tone: decision.holdingCycleTone),
         ],
       ),
     );
@@ -1599,7 +1594,7 @@ class TrendThermometer extends StatelessWidget {
         Row(
           children: [
             const Expanded(
-              child: Text('多空温度计', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
+              child: Text('明天风险温度', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
             ),
             Text(label, style: const TextStyle(fontWeight: FontWeight.w900)),
           ],
@@ -3116,12 +3111,10 @@ class FundService {
     }
 
     if (sellRatio > 0 && buyRatio == 0) {
-      todayState = totalScore <= -2 || majorNegative != null || (etfPremiumRatio != null && etfPremiumRatio >= 1)
-          ? '今天偏跌'
-          : '今天震荡';
+      todayState = '今天偏跌';
     } else if (buyRatio > 0 && sellRatio == 0) {
-      todayState = todayPct >= 0 ? '今天偏涨' : '今天震荡';
-      if (totalScore >= 2) tomorrowTrend = '明天偏涨';
+      todayState = todayPct < -0.15 ? '今天小跌' : '今天偏涨';
+      tomorrowTrend = '明天偏涨';
     } else {
       todayState = buildTodayDirectionText(todayPct: todayPct, totalScore: totalScore);
     }
@@ -3194,44 +3187,38 @@ class FundService {
       holdingCycleTone: holdingCycleTone,
       gridTrigger: amountRule,
       summary: decisionSummary,
-      reason: yesterdayReview == null ? '' : '昨日复盘校准：${yesterdayReview.nextAdjustment}',
+      reason: '',
     );
 
     final todayReason =
         '${todayTone.reason}${useOfficialValue ? ' 晚上已切换为实际净值 ${last.value.toStringAsFixed(4)}。' : hasFundRealtime ? ' 当前盘中估值 ${pct(todayPct)}，更新时间 ${realtime!.updateTime}。' : ' 当前盘中估值暂缺，所以今天只按已经拿到的真实净值、持仓和公告来判断。'}';
-    final plainTrendText = '走势结论：$todayState，$tomorrowTrend。$futureDaysText，$volatilityText，下跌风险$downsideRiskText。';
-    final reviewText = '今天盘面：${joinSentences([
-          forecastBrief(todayState),
-          forward.fundFlowText,
-          tailState,
-          smartMoney.summary,
-        ])}';
-    final tomorrowText = '明天判断：${joinSentences([
-          marketBackdropText,
-          forward.volumeText,
-          resonanceState,
-          '短期更像 ${duration.summary}',
-          if (yesterdayReview != null) '昨天的复盘结果已经作为${scoreAdjustmentText(reviewAdjustment)}写回今天模型',
-          if (etfPremiumRatio != null && etfPremiumRatio >= 1) '${etfPricing!.name} 溢价偏高，明天更容易被套利资金压回去',
-          if (majorNegative != null) '重大负面公告还会继续压制情绪',
-          if (macroEventRisk) '明天前后有高影响宏观或行业事件，资金更容易先避险',
-        ])}';
+    final plainTrendText = '$todayState，$tomorrowTrend；$futureDaysText，波动$volatilityText，下跌风险$downsideRiskText。';
+    final todaySimpleText = sellRatio > 0
+        ? '今天盘面偏防守：板块资金、尾盘承接或高影响事件里有风险信号，继续追容易被回撤打到。'
+        : buyRatio > 0
+            ? '今天盘面有修复信号：资金和趋势没有继续恶化，可以只用小金额试探。'
+            : '今天盘面还没有给出清楚方向：资金、量能和尾盘表现没有站到同一边。';
+    final tomorrowSimpleText = sellRatio > 0
+        ? '明天更要防回落；如果后面几天继续偏弱，先保住本金比多赚一点更重要。'
+        : buyRatio > 0
+            ? '明天有继续反弹机会，但仍按分批来，不适合一次买满。'
+            : '明天先看资金会不会继续流入；没有确认前，少动比乱动更稳。';
     final actionText = confidence == '极低'
-        ? '新人建议：多空分歧还很大，今天最好的动作就是观望，先别为了抢一天的波动硬下场。'
+        ? '新手建议：多空分歧太大，今天不硬猜，先观望。'
         : etfPremiumRatio != null && etfPremiumRatio >= 1 && buyRatio == 0
-            ? '新人建议：场内 ETF 已经出现明显溢价，明天更容易被套利资金压回去，今天先别追。'
+            ? '新手建议：ETF 溢价偏高，今天不追。'
         : macroEventRisk && buyRatio == 0
-            ? '新人建议：明天前后有高影响宏观或行业事件，今晚更适合空仓观望，规避突发风险。'
+            ? '新手建议：明天前后有重要事件，今晚更适合观望。'
         : downsideRiskText == '高' && buyRatio == 0
-            ? '新人建议：后面几天下跌风险偏高，今天不要因为一根小反弹就追进去；如果已经持有较多，可以先降一点。'
+            ? '新手建议：后面几天下跌风险偏高，不追涨；已经持有的话可以先降一点。'
         : buyRatio > 0
             ? t7Risk
-                ? '新人建议：虽然明天不排除还有反弹，但场外基金需要持有 7 天才免手续费，这种短线窗口不划算，今天放弃追买更稳。'
-                : '新人建议：明天和后面几天的胜率比风险更划算，可以在 14:50 前后小额分批买入，只试探，不一次性追价。'
+                ? '新手建议：短线反弹不够划算，场外基金有 7 天手续费约束，今天不追。'
+                : '新手建议：可以小额分批买入，只试探，不一次性追价。'
             : sellRatio > 0
-                ? '新人建议：后面几天更容易回落或波动变大，先降一点仓位，把已经暴露出来的回撤风险压住。'
-                : '新人建议：今天先不动，手里留着现金和仓位，等更明确的止跌或放量确认。';
-    final actionReason = '$plainTrendText\n\n$reviewText\n\n$tomorrowText\n\n$actionText';
+                ? '新手建议：先卖出一小部分，把回撤风险压住；不是清仓，是先防守。'
+                : '新手建议：今天先不动，等更明确的止跌或放量确认。';
+    final actionReason = '$plainTrendText\n\n$todaySimpleText\n\n$tomorrowSimpleText\n\n$actionText';
     final upperTriggerValue = recentResistance > decisionNav ? recentResistance : decisionNav * (1 + max(0.02, atr14 / 100));
     final lowerTriggerValue = recentSupport < decisionNav ? recentSupport : decisionNav * (1 - max(0.025, atr14 / 100));
     final battlePlan = GridBattlePlan(
@@ -4554,12 +4541,14 @@ class AnalysisLockState {
             etfPricingTone: analysis.decision.etfPricingTone,
           )
         : null;
+    final resolvedTodayState = hasTodayLock ? lockedDirectionOrLive(todayState, analysis.todayState, today: true) : null;
+    final resolvedTomorrowTrend = hasTomorrowLock ? lockedDirectionOrLive(tomorrowTrend, analysis.tomorrowTrend, today: false) : null;
     return analysis.copyWith(
-      todayState: hasTodayLock ? todayState : null,
+      todayState: resolvedTodayState,
       todayConfidence: hasTodayLock ? todayConfidence : null,
       todayReason: hasTodayLock ? todayReason : null,
       todayLockedAt: hasTodayLock ? todayLockedAt : analysis.todayLockedAt,
-      tomorrowTrend: hasTomorrowLock ? tomorrowTrend : null,
+      tomorrowTrend: resolvedTomorrowTrend,
       probabilityUp: hasTomorrowLock ? probabilityUp : null,
       action: hasTomorrowLock ? action : null,
       buyRatio: hasTomorrowLock ? buyRatio : null,
@@ -4811,6 +4800,81 @@ int tradingMinute(DateTime time) {
 }
 
 String formatClock(DateTime time) => '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+bool isDirectionLabel(String? text, {required bool today}) {
+  if (text == null) return false;
+  final prefix = today ? '今天' : '明天';
+  return RegExp('^$prefix(偏涨|小涨|震荡|小跌|偏跌)\$').hasMatch(text.trim());
+}
+
+String lockedDirectionOrLive(String? locked, String live, {required bool today}) {
+  final value = locked?.trim();
+  if (isDirectionLabel(value, today: today)) return value!;
+  return live;
+}
+
+String compactDecisionText(String label, String value, String tone) {
+  final clean = value
+      .replaceAll(RegExp(r'得分\s*[+-]?\d+'), '')
+      .replaceAll(RegExp(r'MA\d+\s*[+-]?\d+(\.\d+)?%?'), '')
+      .replaceAll(RegExp(r'RSI\d*\s*\d+(\.\d+)?'), '')
+      .replaceAll(RegExp(r'Bias\d*\s*[+-]?\d+(\.\d+)?%?'), '')
+      .replaceAll('当前按低权重处理', '')
+      .replaceAll('北向收盘后接口经常归零', '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  final flowMatch = RegExp(r'主力净(流入|流出)\s*([0-9.]+亿)').firstMatch(clean);
+  final premiumMatch = RegExp(r'折溢价\s*([+-]?[0-9.]+%)').firstMatch(clean);
+
+  switch (label) {
+    case '外围背景':
+      if (tone == 'good') return '外围和大盘环境偏暖，明天更容易顺风。';
+      if (tone == 'bad') return '外围或大盘情绪偏弱，明天先防回落。';
+      return '外围和大盘没有明显站队，主要看板块资金。';
+    case '板块资金':
+      if (flowMatch != null) {
+        final direction = flowMatch.group(1)!;
+        final amount = flowMatch.group(2)!;
+        return direction == '流入' ? '主力净流入 $amount，资金仍在买入。' : '主力净流出 $amount，抛压偏重。';
+      }
+      if (tone == 'good') return '板块资金偏流入，有资金支撑。';
+      if (tone == 'bad') return '板块资金偏流出，追涨风险更高。';
+      return '板块资金方向不够清楚，先不做强判断。';
+    case '尾盘动向':
+      if (clean.contains('合力抢筹') || clean.contains('分化')) return '核心重仓股尾盘分化，未见合力抢筹。';
+      if (clean.contains('走强') || clean.contains('抢筹')) return '核心重仓股尾盘走强，有资金抢筹迹象。';
+      if (clean.contains('走弱') || clean.contains('卖压')) return '核心重仓股尾盘走弱，卖压还没散。';
+      return tone == 'good' ? '尾盘承接偏强。' : tone == 'bad' ? '尾盘承接偏弱。' : '尾盘没有给出强方向。';
+    case '聪明资金':
+      if (tone == 'good') return '机构、大单和杠杆资金偏积极。';
+      if (tone == 'bad') return '机构、大单和杠杆资金偏谨慎。';
+      return '机构、大单和杠杆资金分歧，暂不支持激进操作。';
+    case 'ETF折溢价':
+      if (premiumMatch != null) {
+        final premium = premiumMatch.group(1)!;
+        return tone == 'bad' ? 'ETF 折溢价 $premium，警惕溢价回落。' : 'ETF 折溢价 $premium，情绪没有明显失真。';
+      }
+      return 'ETF 折溢价等待刷新，暂不作为硬判断。';
+    case '量价状态':
+      if (clean.contains('量价背离') || clean.contains('量能没有跟上')) return '上涨缺少量能配合，追价意愿偏弱。';
+      if (clean.contains('上涨时量能')) return '上涨时量能还能配合，承接不差。';
+      if (clean.contains('上涨') && clean.contains('下跌')) return '市场广度已纳入判断，指数没有单边确认。';
+      return tone == 'good' ? '量价配合偏好。' : tone == 'bad' ? '量价配合偏弱。' : '量能还不够清楚，先看承接。';
+    case '趋势共振':
+      if (tone == 'good') return '大盘、板块和均线方向偏顺。';
+      if (tone == 'bad') return '当前位置接近压力位，短线缺少上行动能。';
+      return '趋势还没完全站稳，明天先看资金能否继续跟。';
+    case '后面几天':
+      if (clean.contains('回调')) return '短期可能回调 1-2 天，先防守。';
+      if (clean.contains('上涨') || clean.contains('修复')) return '短期仍有修复空间，但要看量能。';
+      return '后面几天更像震荡，别把一天波动看太重。';
+    case 'T+7 安全垫':
+      if (clean.contains('免除') || clean.contains('满 7 天')) return '持有份额已满足 7 天，卖出不触发惩罚手续费。';
+      if (clean.contains('未满') || clean.contains('锁定')) return '部分份额仍受 7 天手续费约束，卖出前要谨慎。';
+      return '持有周期还在核对，先按保守规则处理。';
+  }
+  return clean.isEmpty ? '等待真实数据刷新。' : clean;
+}
 
 Color toneColor(String tone) {
   if (tone == 'good') return AppColors.red;
@@ -6232,9 +6296,9 @@ String actualDirectionText(int direction) {
 }
 
 String scoreAdjustmentText(int value) {
-  if (value > 0) return '看多 +$value 分';
-  if (value < 0) return '看空 $value 分';
-  return '中性 0 分';
+  if (value > 0) return '偏多校准';
+  if (value < 0) return '偏空校准';
+  return '保持观望纪律';
 }
 
 int reviewScoreAdjustment(int predictedDirection, int actualDirection, bool success) {
