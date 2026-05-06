@@ -1513,6 +1513,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
     final showBuyAmount = showBuyReason;
     final showSellAmount = showSellReason;
     final hasOperation = showBuyAmount || showSellAmount;
+    final upProbability = _analysis.probabilityUp.clamp(0.0, 100.0).toDouble();
+    final downProbability = (100 - upProbability).clamp(0.0, 100.0).toDouble();
     return Scaffold(
       appBar: AppBar(
         title: const Text('基金分析', style: TextStyle(fontWeight: FontWeight.w900)),
@@ -1552,6 +1554,25 @@ class _FundDetailPageState extends State<FundDetailPage> {
                           locked: false,
                           value: _analysis.tomorrowTrend,
                           color: signalColor(_analysis.tomorrowTrend),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _Metric(
+                          label: '明天上涨概率',
+                          value: '${upProbability.toStringAsFixed(0)}%',
+                          color: AppColors.red,
+                        ),
+                      ),
+                      Expanded(
+                        child: _Metric(
+                          label: '明天下跌概率',
+                          value: '${downProbability.toStringAsFixed(0)}%',
+                          color: AppColors.green,
                         ),
                       ),
                     ],
@@ -1599,6 +1620,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
               const SizedBox(height: 12),
             ],
             PositionProfitCenterCard(item: _item, analysis: _analysis),
+            const SizedBox(height: 12),
+            MarketRiskProfileCard(analysis: _analysis),
             const SizedBox(height: 12),
             CardShell(
               child: Column(
@@ -2567,6 +2590,78 @@ class TomorrowScenariosCard extends StatelessWidget {
   }
 }
 
+class MarketRiskProfileCard extends StatelessWidget {
+  const MarketRiskProfileCard({super.key, required this.analysis});
+
+  final FundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    final points = analysis.navPoints;
+    final sample = points.takeLast(min(250, points.length));
+    final returns = dailyReturns(points);
+    final oneYearDrawdown = maxDrawdown(sample) * 100;
+    final oneMonthVolatility = std(returns.takeLast(20));
+    final threeMonthReturn = returns.takeLast(60).sum;
+    final directionText = analysis.probabilityUp >= 60
+        ? '明天偏向上涨一侧'
+        : analysis.probabilityUp <= 40
+            ? '明天偏向下跌一侧'
+            : '明天仍在多空拉扯区';
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('风险快照', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 8),
+          Text(
+            '这组数据不直接给买卖指令，只用真实净值和历史波动告诉你：现在值不值得冒更大的风险。',
+            style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _Metric(label: '近1年最大回撤', value: pct(oneYearDrawdown), color: oneYearDrawdown < 0 ? AppColors.green : AppColors.ink)),
+              Expanded(child: _Metric(label: '近20日波动', value: pct(oneMonthVolatility))),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _Metric(
+                  label: '近60日收益',
+                  value: pct(threeMonthReturn),
+                  color: threeMonthReturn > 0
+                      ? AppColors.red
+                      : threeMonthReturn < 0
+                          ? AppColors.green
+                          : AppColors.ink,
+                ),
+              ),
+              Expanded(child: _Metric(label: '当前风险级别', value: analysis.downsideRiskText)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.softGrey,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Text(
+              '明日概率目前是 ${analysis.probabilityUp.toStringAsFixed(0)}% 向上、${(100 - analysis.probabilityUp).toStringAsFixed(0)}% 向下。$directionText；如果回撤已经很深但波动还在放大，就更适合先控制仓位，再等更明确的企稳信号。',
+              style: const TextStyle(color: AppColors.ink, height: 1.45, fontWeight: FontWeight.w800),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class DataTruthCard extends StatelessWidget {
   const DataTruthCard({super.key, required this.analysis});
 
@@ -2587,6 +2682,62 @@ class DataTruthCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           ...rows.map((row) => _DataTruthRow(row: row)),
+          const Divider(height: 28),
+          const Text('这套判断怎么来的', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 10),
+          const _SystemStageRow(
+            title: '数据层',
+            detail: '当前版本只接官方净值/估值、重仓股、板块资金、ETF折溢价、公告和你的真实持仓记录。',
+          ),
+          const _SystemStageRow(
+            title: '特征层',
+            detail: '把真实数据拆成量价、持仓归因、宏观背景、事件扰动这些可解释信号，不靠黑箱乱猜。',
+          ),
+          const _SystemStageRow(
+            title: '预测层',
+            detail: '当前先用多因子规则引擎做明日涨跌概率和后面几天风险判断，后续再逐步接机器学习模型。',
+          ),
+          const _SystemStageRow(
+            title: '风控层',
+            detail: '每次结论都会被T+7、波动、回撤、重大事件和置信度二次过滤，先控制回撤，再谈机会。',
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '结果只作为辅助参考，不构成投资建议。',
+            style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SystemStageRow extends StatelessWidget {
+  const _SystemStageRow({required this.title, required this.detail});
+
+  final String title;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 64,
+            child: Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              detail,
+              style: const TextStyle(color: AppColors.muted, height: 1.4, fontWeight: FontWeight.w700),
+            ),
+          ),
         ],
       ),
     );
