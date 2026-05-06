@@ -3462,24 +3462,24 @@ class FundService {
       holdingSourceText,
       totalCapital,
     );
-    final yesterdayReview = await _loadYesterdayReview(code, draft.todayPct);
-    final live = yesterdayReview == null
-        ? draft
-        : _analyze(
-            fund,
-            holdings,
-            announcements,
-            market,
-            smartMoney,
-            theme,
-            realtime,
-            intraday,
-            tailSignals,
-            settledItem,
-            holdingSourceText,
-            totalCapital,
-            yesterdayReview: yesterdayReview,
-          );
+    final yesterdayReview = await _loadYesterdayReview(code, theme, draft.todayPct);
+    final calibration = await _loadFactorCalibration(theme);
+    final live = _analyze(
+      fund,
+      holdings,
+      announcements,
+      market,
+      smartMoney,
+      theme,
+      realtime,
+      intraday,
+      tailSignals,
+      settledItem,
+      holdingSourceText,
+      totalCapital,
+      yesterdayReview: yesterdayReview,
+      calibration: calibration,
+    );
     return _applyLocks(code, live.copyWith(yesterdayReview: yesterdayReview));
   }
 
@@ -3904,8 +3904,9 @@ class FundService {
     }
   }
 
-  Future<YesterdayReview?> _loadYesterdayReview(String code, double todayPct) async {
+  Future<YesterdayReview?> _loadYesterdayReview(String code, String theme, double todayPct) async {
     final yesterday = previousTradingDate(DateTime.now());
+    final reviewDate = dateText(yesterday);
     final lock = await _loadLockState(code, dateText(yesterday));
     if (!lock.hasTomorrowLock || (lock.tomorrowTrend ?? '').isEmpty) return null;
     final predicted = lock.tomorrowTrend!;
@@ -3916,7 +3917,13 @@ class FundService {
     final success = predictedDirection == actualDirection;
     final actualText = actualDirectionText(actualDirection);
     final scoreAdjustment = reviewScoreAdjustment(predictedDirection, actualDirection, success);
-    final trackRecord = await _saveAndSummarizeReviewHistory(code, dateText(yesterday), success);
+    final trackRecord = await _saveAndSummarizeReviewHistory(code, reviewDate, success);
+    final shouldLearn = await _markReviewLearningOnce(code, reviewDate);
+    if (shouldLearn) {
+      await _updateFactorCalibration(theme, lock, actualDirection);
+    }
+    final calibration = await _loadFactorCalibration(theme);
+    final calibrationText = calibration.summaryText();
     return YesterdayReview(
       headline: success
           ? predictedDirection == 0
@@ -3932,7 +3939,7 @@ class FundService {
       predictedDirection: predictedDirection,
       actualDirection: actualDirection,
       scoreAdjustment: scoreAdjustment,
-      trackRecord: trackRecord,
+      trackRecord: calibrationText.isEmpty ? trackRecord : '$trackRecord $calibrationText',
     );
   }
 
@@ -3956,6 +3963,55 @@ class FundService {
     final hit = latest.where((row) => row['success'] == true).length;
     final miss = latest.length - hit;
     return '近 ${latest.length} 次预判：命中 $hit 次，失误 $miss 次。连续使用后会自动累计到近 7 次。';
+  }
+
+  Future<bool> _markReviewLearningOnce(String code, String date) async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'review_learned_$code_$date';
+    if (prefs.getBool(key) == true) return false;
+    await prefs.setBool(key, true);
+    return true;
+  }
+
+  Future<FactorCalibrationProfile> _loadFactorCalibration(String theme) async {
+    final prefs = await SharedPreferences.getInstance();
+    final global = _readFactorCalibrationProfile(
+      prefs.getString(factorCalibrationStorageKey('global')),
+      scope: 'global',
+    );
+    if (theme.isEmpty) return global;
+    final themed = _readFactorCalibrationProfile(
+      prefs.getString(factorCalibrationStorageKey('theme_$theme')),
+      scope: 'theme_$theme',
+    );
+    return mergeFactorCalibrationProfiles(global, themed, scope: theme);
+  }
+
+  FactorCalibrationProfile _readFactorCalibrationProfile(String? raw, {required String scope}) {
+    if (raw == null || raw.isEmpty) return FactorCalibrationProfile(scope: scope);
+    try {
+      return FactorCalibrationProfile.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return FactorCalibrationProfile(scope: scope);
+    }
+  }
+
+  Future<void> _updateFactorCalibration(String theme, AnalysisLockState lock, int actualDirection) async {
+    final decision = lock.decision;
+    if (decision == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    final scopes = <String>['global', if (theme.isNotEmpty) 'theme_$theme'];
+    for (final scope in scopes) {
+      final current = _readFactorCalibrationProfile(
+        prefs.getString(factorCalibrationStorageKey(scope)),
+        scope: scope,
+      );
+      final updated = applyCalibrationOutcome(current, decision, actualDirection);
+      await prefs.setString(
+        factorCalibrationStorageKey(scope),
+        jsonEncode(updated.toJson()),
+      );
+    }
   }
 
   Future<EtfShareSignal> _loadEtfShareSignal(String code, double totalShare) async {
@@ -4610,6 +4666,7 @@ class FundService {
     String holdingSourceText,
     double totalCapital, {
     YesterdayReview? yesterdayReview,
+    FactorCalibrationProfile? calibration,
   }) {
     final points = fund.points;
     final last = points.last;
@@ -4685,7 +4742,26 @@ class FundService {
 
     final reviewAdjustment = yesterdayReview?.scoreAdjustment ?? 0;
     final etfShareScore = market.etfPricing?.shareSignalScore ?? 0;
-    var totalScore = forward.total + breadthScore + biasScoreValue + marketBackdropScore + smartMoney.score + resonance.score + etfShareScore + reviewAdjustment;
+    final etfPremiumScore = etfPremiumScoreFromRatio(market.etfPricing?.premiumDiscountRatio);
+    final activeCalibration = calibration ?? const FactorCalibrationProfile(scope: 'live');
+    final macroWeighted = marketBackdropScore * activeCalibration.multiplierFor('macro');
+    final sectorWeighted = forward.fundFlowScore * activeCalibration.multiplierFor('sector');
+    final tailWeighted = forward.tailScore * activeCalibration.multiplierFor('tail');
+    final volumeWeighted = forward.volumeScore * activeCalibration.multiplierFor('volume');
+    final smartMoneyWeighted = smartMoney.score * activeCalibration.multiplierFor('smartMoney');
+    final etfPricingWeighted = (etfShareScore + etfPremiumScore) * activeCalibration.multiplierFor('etfPricing');
+    final resonanceWeighted = resonance.score * activeCalibration.multiplierFor('resonance');
+    final rawBaseScore = sectorWeighted +
+        tailWeighted +
+        volumeWeighted +
+        breadthScore +
+        biasScoreValue +
+        macroWeighted +
+        smartMoneyWeighted +
+        resonanceWeighted +
+        etfPricingWeighted +
+        reviewAdjustment;
+    var totalScore = rawBaseScore.round();
     final duration = buildDurationSignal(
       points: points,
       decisionNav: decisionNav,
@@ -4693,8 +4769,13 @@ class FundService {
       majorNegative: majorNegative,
       positiveCatalyst: positiveCatalyst,
     );
-    if (duration.tone == 'good' && totalScore > 0) totalScore += 1;
-    if (duration.tone == 'bad' && totalScore < 0) totalScore -= 1;
+    final durationScore = duration.tone == 'good' && totalScore >= 0
+        ? 1
+        : duration.tone == 'bad' && totalScore <= 0
+            ? -1
+            : 0;
+    final rawTotalScore = rawBaseScore + durationScore * activeCalibration.multiplierFor('duration');
+    totalScore = rawTotalScore.round();
 
     final availableTomorrowSignals = [
       market.board?.mainFlow != null,
@@ -4728,8 +4809,35 @@ class FundService {
       resonance.score != 0 && forward.total != 0 && resonance.score.sign != forward.total.sign,
       yesterdayReview?.success == false && reviewAdjustment != 0 && forward.total != 0 && reviewAdjustment.sign != forward.total.sign,
     ].where((item) => item).length;
+    final currentDirection = totalScore.sign;
+    final fragileAlignmentCount = [
+      marketBackdropScore != 0 && marketBackdropScore.sign == currentDirection && activeCalibration.multiplierFor('macro') < 0.92,
+      forward.fundFlowScore != 0 && forward.fundFlowScore.sign == currentDirection && activeCalibration.multiplierFor('sector') < 0.92,
+      forward.tailScore != 0 && forward.tailScore.sign == currentDirection && activeCalibration.multiplierFor('tail') < 0.92,
+      forward.volumeScore != 0 && forward.volumeScore.sign == currentDirection && activeCalibration.multiplierFor('volume') < 0.92,
+      smartMoney.score != 0 && smartMoney.score.sign == currentDirection && activeCalibration.multiplierFor('smartMoney') < 0.92,
+      (etfShareScore + etfPremiumScore) != 0 &&
+          (etfShareScore + etfPremiumScore).sign == currentDirection &&
+          activeCalibration.multiplierFor('etfPricing') < 0.92,
+      resonance.score != 0 && resonance.score.sign == currentDirection && activeCalibration.multiplierFor('resonance') < 0.92,
+      durationScore != 0 && durationScore.sign == currentDirection && activeCalibration.multiplierFor('duration') < 0.92,
+    ].where((item) => item).length;
+    final trustedAlignmentCount = [
+      marketBackdropScore != 0 && marketBackdropScore.sign == currentDirection && activeCalibration.multiplierFor('macro') > 1.08,
+      forward.fundFlowScore != 0 && forward.fundFlowScore.sign == currentDirection && activeCalibration.multiplierFor('sector') > 1.08,
+      forward.tailScore != 0 && forward.tailScore.sign == currentDirection && activeCalibration.multiplierFor('tail') > 1.08,
+      smartMoney.score != 0 && smartMoney.score.sign == currentDirection && activeCalibration.multiplierFor('smartMoney') > 1.08,
+      resonance.score != 0 && resonance.score.sign == currentDirection && activeCalibration.multiplierFor('resonance') > 1.08,
+      durationScore != 0 && durationScore.sign == currentDirection && activeCalibration.multiplierFor('duration') > 1.08,
+    ].where((item) => item).length;
     if (conflictCount >= 2) {
       confidence = '极低';
+    } else if (fragileAlignmentCount >= 3 && confidence == '中') {
+      confidence = '中低';
+    } else if (fragileAlignmentCount >= 4) {
+      confidence = '低';
+    } else if (trustedAlignmentCount >= 3 && conflictCount == 0 && confidence == '中低') {
+      confidence = '中';
     } else if (yesterdayReview?.success == false && confidence == '中') {
       confidence = '中低';
     }
@@ -4739,7 +4847,7 @@ class FundService {
     final smartMoneyState = smartMoney.summary;
     final volumeState = joinSentences([forward.volumeText, breadthText]);
     final resonanceState = resonance.summary;
-    final probabilityUp = (50 + totalScore * 6).clamp(10.0, 90.0).toDouble();
+    final probabilityUp = (50 + rawTotalScore * 5.8).clamp(10.0, 90.0).toDouble();
     var todayState = buildTodayDirectionText(todayPct: todayPct, totalScore: totalScore);
     var tomorrowTrend = buildTomorrowDirectionText(totalScore: totalScore, confidence: confidence);
     final valuationBackground = valuationText(drawdown: drawdown, last20: last20);
@@ -5949,6 +6057,105 @@ class YesterdayReview {
   final int actualDirection;
   final int scoreAdjustment;
   final String trackRecord;
+}
+
+class FactorCalibrationStat {
+  const FactorCalibrationStat({
+    this.hit = 0,
+    this.miss = 0,
+  });
+
+  final int hit;
+  final int miss;
+
+  int get total => hit + miss;
+  double get hitRate => total == 0 ? 0.5 : hit / total;
+  double get learningStrength => (total / 8).clamp(0.0, 1.0).toDouble();
+  double get edge => (hitRate - 0.5) * learningStrength;
+  double get multiplier => (1 + edge * 0.9).clamp(0.72, 1.28).toDouble();
+
+  FactorCalibrationStat recordHit() => FactorCalibrationStat(hit: hit + 1, miss: miss);
+  FactorCalibrationStat recordMiss() => FactorCalibrationStat(hit: hit, miss: miss + 1);
+
+  Map<String, dynamic> toJson() => {
+        'hit': hit,
+        'miss': miss,
+      };
+
+  factory FactorCalibrationStat.fromJson(Map<String, dynamic> json) => FactorCalibrationStat(
+        hit: toInt(json['hit']),
+        miss: toInt(json['miss']),
+      );
+}
+
+class FactorCalibrationProfile {
+  const FactorCalibrationProfile({
+    required this.scope,
+    this.factors = const {},
+    this.updatedAt = '',
+  });
+
+  final String scope;
+  final Map<String, FactorCalibrationStat> factors;
+  final String updatedAt;
+
+  FactorCalibrationStat statFor(String factor) => factors[factor] ?? const FactorCalibrationStat();
+  double multiplierFor(String factor) => statFor(factor).multiplier;
+
+  bool get hasLearnedSignals => calibrationFactorOrder.any((factor) => statFor(factor).total > 0);
+
+  String summaryText() {
+    final mature = calibrationFactorOrder.where((factor) => statFor(factor).total >= 3).toList();
+    if (mature.isEmpty) return '';
+    mature.sort((a, b) => statFor(b).edge.abs().compareTo(statFor(a).edge.abs()));
+    final stronger = mature.where((factor) => statFor(factor).multiplier > 1.06).take(2).map(calibrationFactorLabel).toList();
+    final weaker = mature.where((factor) => statFor(factor).multiplier < 0.94).take(2).map(calibrationFactorLabel).toList();
+    if (stronger.isEmpty && weaker.isEmpty) {
+      return '最近真实样本显示，各因子稳定性差不多，模型继续按多因子共振来判断。';
+    }
+    final parts = <String>[];
+    if (stronger.isNotEmpty) parts.add('最近更可信的是 ${stronger.join('、')}');
+    if (weaker.isNotEmpty) parts.add('最近更容易误导的是 ${weaker.join('、')}');
+    return '${parts.join('；')}。';
+  }
+
+  FactorCalibrationProfile copyWith({
+    String? scope,
+    Map<String, FactorCalibrationStat>? factors,
+    String? updatedAt,
+  }) {
+    return FactorCalibrationProfile(
+      scope: scope ?? this.scope,
+      factors: factors ?? this.factors,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'scope': scope,
+        'updatedAt': updatedAt,
+        'factors': factors.map((key, value) => MapEntry(key, value.toJson())),
+      };
+
+  factory FactorCalibrationProfile.fromJson(Map<String, dynamic> json) {
+    final rawFactors = json['factors'];
+    final parsed = <String, FactorCalibrationStat>{};
+    if (rawFactors is Map) {
+      for (final entry in rawFactors.entries) {
+        final value = entry.value;
+        if (value is Map<String, dynamic>) {
+          parsed[entry.key.toString()] = FactorCalibrationStat.fromJson(value);
+        } else if (value is Map) {
+          parsed[entry.key.toString()] = FactorCalibrationStat.fromJson(value.cast<String, dynamic>());
+        }
+      }
+    }
+    return FactorCalibrationProfile(
+      scope: (json['scope'] ?? '').toString(),
+      factors: parsed,
+      updatedAt: (json['updatedAt'] ?? '').toString(),
+    );
+  }
 }
 
 class GridBattlePlan {
@@ -8690,6 +8897,113 @@ double maxDrawdown(List<NavPoint> points) {
 String holidayEffect() {
   final month = DateTime.now().month;
   return {1, 2, 9, 10}.contains(month) ? '节假日前后，催化较强' : '非春节/中秋/国庆窗口，催化偏弱';
+}
+
+const calibrationFactorOrder = <String>[
+  'macro',
+  'sector',
+  'tail',
+  'smartMoney',
+  'etfPricing',
+  'volume',
+  'resonance',
+  'duration',
+];
+
+const calibrationFactorLabels = <String, String>{
+  'macro': '外围背景',
+  'sector': '板块资金',
+  'tail': '尾盘动向',
+  'smartMoney': '聪明资金',
+  'etfPricing': 'ETF折溢价',
+  'volume': '量价状态',
+  'resonance': '趋势共振',
+  'duration': '持续判断',
+};
+
+String factorCalibrationStorageKey(String scope) => 'factor_calibration_$scope';
+
+String calibrationFactorLabel(String factor) => calibrationFactorLabels[factor] ?? factor;
+
+String decisionToneForFactor(DecisionModel decision, String factor) {
+  switch (factor) {
+    case 'macro':
+      return decision.macroTone;
+    case 'sector':
+      return decision.valuationTone;
+    case 'tail':
+      return decision.trendTone;
+    case 'smartMoney':
+      return decision.smartMoneyTone;
+    case 'etfPricing':
+      return decision.etfPricingTone;
+    case 'volume':
+      return decision.deviationTone;
+    case 'resonance':
+      return decision.resonanceTone;
+    case 'duration':
+      return decision.durationTone;
+    default:
+      return 'warn';
+  }
+}
+
+FactorCalibrationProfile applyCalibrationOutcome(
+  FactorCalibrationProfile profile,
+  DecisionModel decision,
+  int actualDirection,
+) {
+  final updated = Map<String, FactorCalibrationStat>.from(profile.factors);
+  final actualTone = actualDirection > 0
+      ? 'good'
+      : actualDirection < 0
+          ? 'bad'
+          : 'warn';
+  for (final factor in calibrationFactorOrder) {
+    final tone = decisionToneForFactor(decision, factor);
+    if (tone.isEmpty || tone == 'warn') continue;
+    final current = updated[factor] ?? const FactorCalibrationStat();
+    if (actualDirection == 0) {
+      updated[factor] = current.recordMiss();
+    } else if (tone == actualTone) {
+      updated[factor] = current.recordHit();
+    } else {
+      updated[factor] = current.recordMiss();
+    }
+  }
+  return profile.copyWith(
+    factors: updated,
+    updatedAt: todayDateString(),
+  );
+}
+
+FactorCalibrationProfile mergeFactorCalibrationProfiles(
+  FactorCalibrationProfile global,
+  FactorCalibrationProfile themed, {
+  required String scope,
+}) {
+  final merged = <String, FactorCalibrationStat>{};
+  for (final factor in calibrationFactorOrder) {
+    final globalStat = global.statFor(factor);
+    final themedStat = themed.statFor(factor);
+    merged[factor] = FactorCalibrationStat(
+      hit: globalStat.hit + themedStat.hit * 2,
+      miss: globalStat.miss + themedStat.miss * 2,
+    );
+  }
+  return FactorCalibrationProfile(
+    scope: scope,
+    factors: merged,
+    updatedAt: themed.updatedAt.isNotEmpty ? themed.updatedAt : global.updatedAt,
+  );
+}
+
+int etfPremiumScoreFromRatio(double? premiumRatio) {
+  if (premiumRatio == null) return 0;
+  if (premiumRatio >= 1.2) return -2;
+  if (premiumRatio >= 0.6) return -1;
+  if (premiumRatio <= -1.0) return 1;
+  return 0;
 }
 
 class ForecastVisual {
