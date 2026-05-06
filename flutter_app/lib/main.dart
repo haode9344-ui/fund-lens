@@ -3549,20 +3549,28 @@ class FundService {
       final risingCount = rows.where((row) => toDouble(row['f3']) > 0).length;
       final fallingCount = rows.where((row) => toDouble(row['f3']) < 0).length;
       final flatCount = rows.length - risingCount - fallingCount;
-      final score = fallingCount >= 3500 && fallingCount > risingCount * 1.35
-          ? -2
-          : risingCount >= 3500 && risingCount > fallingCount * 1.35
-              ? 1
-              : 0;
+      final limitUpCount = rows.where((row) => toDouble(row['f3']) >= 9.8).length;
+      final limitDownCount = rows.where((row) => toDouble(row['f3']) <= -9.8).length;
+      var score = 0;
+      if (fallingCount >= 3500 && fallingCount > risingCount * 1.35) {
+        score -= 2;
+      } else if (risingCount >= 3500 && risingCount > fallingCount * 1.35) {
+        score += 1;
+      }
+      if (limitDownCount >= 25 && limitDownCount > max(1, limitUpCount) * 2) score -= 1;
+      if (limitUpCount >= 45 && limitUpCount > max(1, limitDownCount) * 2) score += 1;
+      score = score.clamp(-2, 2);
       final summary = fallingCount >= 3500 && fallingCount > risingCount * 1.35
-          ? '全市场下跌家数 $fallingCount 家，明显多于上涨家数 $risingCount 家，指数就算翻红也要防止虚假繁荣。'
+          ? '全市场下跌家数 $fallingCount 家，明显多于上涨家数 $risingCount 家；跌停 $limitDownCount 家、涨停 $limitUpCount 家，指数就算翻红也要防止虚假繁荣。'
           : risingCount >= 3500 && risingCount > fallingCount * 1.35
-              ? '全市场上涨家数 $risingCount 家，明显多于下跌家数 $fallingCount 家，赚钱效应在回暖。'
-              : '全市场上涨 $risingCount 家、下跌 $fallingCount 家，市场情绪还在拉扯。';
+              ? '全市场上涨家数 $risingCount 家，明显多于下跌家数 $fallingCount 家；涨停 $limitUpCount 家、跌停 $limitDownCount 家，赚钱效应在回暖。'
+              : '全市场上涨 $risingCount 家、下跌 $fallingCount 家；涨停 $limitUpCount 家、跌停 $limitDownCount 家，市场情绪还在拉扯。';
       return MarketBreadthSignal(
         risingCount: risingCount,
         fallingCount: fallingCount,
         flatCount: flatCount,
+        limitUpCount: limitUpCount,
+        limitDownCount: limitDownCount,
         summary: summary,
         score: score,
       );
@@ -3596,6 +3604,7 @@ class FundService {
       final name = (row['SECURITY_NAME_ABBR'] ?? '').toString();
       final indexName = (row['INDEX_NAME'] ?? '').toString();
       if (premiumDiscountRatio == null || changePct == null || name.isEmpty) return null;
+      final shareSignal = totalShare == null || totalShare <= 0 ? null : await _loadEtfShareSignal(lookupCode, totalShare);
       return EtfPricingSignal(
         code: lookupCode,
         name: name,
@@ -3605,6 +3614,9 @@ class FundService {
         volumeRatio: volumeRatio,
         dealAmount: dealAmount,
         totalShare: totalShare,
+        shareChangePct: shareSignal?.changePct,
+        shareSignalText: shareSignal?.text,
+        shareSignalScore: shareSignal?.score ?? 0,
       );
     } catch (_) {
       return null;
@@ -3663,6 +3675,57 @@ class FundService {
     final hit = latest.where((row) => row['success'] == true).length;
     final miss = latest.length - hit;
     return '近 ${latest.length} 次预判：命中 $hit 次，失误 $miss 次。连续使用后会自动累计到近 7 次。';
+  }
+
+  Future<EtfShareSignal> _loadEtfShareSignal(String code, double totalShare) async {
+    final prefs = await SharedPreferences.getInstance();
+    final today = dateText(DateTime.now());
+    final key = 'etf_share_history_$code';
+    final raw = prefs.getString(key);
+    final rows = <Map<String, dynamic>>[];
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        rows.addAll((jsonDecode(raw) as List<dynamic>).whereType<Map<String, dynamic>>());
+      } catch (_) {
+        rows.clear();
+      }
+    }
+    rows.removeWhere((row) => (row['date'] ?? '').toString() == today);
+    rows.add({'date': today, 'share': totalShare});
+    rows.sort((a, b) => (b['date'] ?? '').toString().compareTo((a['date'] ?? '').toString()));
+    await prefs.setString(key, jsonEncode(rows.take(20).toList()));
+    final previous = rows.skip(1).cast<Map<String, dynamic>>().firstWhere(
+          (row) => toDouble(row['share']) > 0,
+          orElse: () => const <String, dynamic>{},
+        );
+    final previousShare = previous.isEmpty ? null : toNullableDouble(previous['share']);
+    if (previousShare == null || previousShare <= 0) {
+      return EtfShareSignal(
+        changePct: null,
+        score: 0,
+        text: '目标 ETF 当前份额 ${shareCountText(totalShare)}，已开始记录；再积累一个交易日后，就能判断是真申购还是在撤。',
+      );
+    }
+    final changePct = (totalShare / previousShare - 1) * 100;
+    if (changePct >= 1.2) {
+      return EtfShareSignal(
+        changePct: changePct,
+        score: 1,
+        text: '目标 ETF 份额较上次记录增加 ${pct(changePct)}，说明有新的申购资金在进来。',
+      );
+    }
+    if (changePct <= -1.2) {
+      return EtfShareSignal(
+        changePct: changePct,
+        score: -1,
+        text: '目标 ETF 份额较上次记录减少 ${pct(changePct)}，说明资金在赎回撤退。',
+      );
+    }
+    return EtfShareSignal(
+      changePct: changePct,
+      score: 0,
+      text: '目标 ETF 份额较上次记录变化 ${pct(changePct)}，资金申赎还不算极端。',
+    );
   }
 
   Future<OvernightSignal> _loadOvernightSignal(String theme) async {
@@ -4340,7 +4403,8 @@ class FundService {
 
 
     final reviewAdjustment = yesterdayReview?.scoreAdjustment ?? 0;
-    var totalScore = forward.total + breadthScore + biasScoreValue + marketBackdropScore + smartMoney.score + resonance.score + reviewAdjustment;
+    final etfShareScore = market.etfPricing?.shareSignalScore ?? 0;
+    var totalScore = forward.total + breadthScore + biasScoreValue + marketBackdropScore + smartMoney.score + resonance.score + etfShareScore + reviewAdjustment;
     final duration = buildDurationSignal(
       points: points,
       decisionNav: decisionNav,
@@ -4356,9 +4420,11 @@ class FundService {
       market.board?.volumeRatio != null,
       tailSignals.where((row) => row.ready && row.changePct != null).length >= 2,
       market.marketBreadth != null,
+      market.marketBreadth?.limitUpCount != null,
       market.board?.rpsPercentile != null,
       market.board?.risingCount != null && market.board?.fallingCount != null,
       market.etfPricing != null,
+      (market.etfPricing?.shareChangePct) != null,
       smartMoney.evidenceCount > 0,
       ma5 > 0 && ma20 > 0 && ma60 > 0,
       yesterdayReview != null,
@@ -4377,6 +4443,7 @@ class FundService {
       duration.tone == 'good' && totalScore < 0,
       forward.volumeScore < 0 && (forward.fundFlowScore > 0 || forward.tailScore > 0),
       smartMoney.score != 0 && forward.fundFlowScore != 0 && smartMoney.score.sign != forward.fundFlowScore.sign,
+      etfShareScore != 0 && forward.fundFlowScore != 0 && etfShareScore.sign != forward.fundFlowScore.sign,
       resonance.score != 0 && forward.total != 0 && resonance.score.sign != forward.total.sign,
       yesterdayReview?.success == false && reviewAdjustment != 0 && forward.total != 0 && reviewAdjustment.sign != forward.total.sign,
     ].where((item) => item).length;
@@ -4432,6 +4499,8 @@ class FundService {
                     '${etfPricing.name} 当前折溢价 ${pct(etfPremiumRatio!)}，情绪没有明显失真。',
                     if (etfPricing.volumeRatio != null && etfPricing.volumeRatio! >= 1.4) '量比 ${etfPricing.volumeRatio!.toStringAsFixed(1)}，说明场内交易明显放大。',
                     if (etfPricing.dealAmount != null && etfPricing.dealAmount! > 0) '成交额 ${cnAmount(etfPricing.dealAmount!)}。',
+                    if (etfPricing.totalShare != null && etfPricing.totalShare! > 0) '当前份额 ${shareCountText(etfPricing.totalShare!)}。',
+                    if ((etfPricing.shareSignalText ?? '').isNotEmpty) etfPricing.shareSignalText!,
                   ]);
     final etfPricingTone = etfPricing == null
         ? 'warn'
@@ -4794,7 +4863,7 @@ class FundService {
       holdings: holdings,
       announcements: announcements,
       liquorSpecial: isLiquor
-          ? '估值位置：$valuationBackground；龙头业绩：${majorNegative == null ? '关注茅台、五粮液、泸州老窖经营数据' : '五粮液管理层公告偏负面'}；消费情绪：${last20 > 0 ? '中性修复' : '偏弱'}；节假日效应：${holidayEffect()}；机构拥挤度：${std(returns.takeLast(30)) > 1.4 ? '中高' : '中'}。'
+          ? '价格位置：$valuationBackground；龙头业绩：${majorNegative == null ? '关注茅台、五粮液、泸州老窖经营数据' : '五粮液管理层公告偏负面'}；消费情绪：${last20 > 0 ? '中性修复' : '偏弱'}；节假日效应：${holidayEffect()}；机构拥挤度：${std(returns.takeLast(30)) > 1.4 ? '中高' : '中'}。'
           : null,
       battlePlan: battlePlan,
       settledItem: item,
@@ -5352,6 +5421,18 @@ class SmartMoneySignal {
   final int eventScore;
 }
 
+class EtfShareSignal {
+  EtfShareSignal({
+    required this.text,
+    required this.score,
+    this.changePct,
+  });
+
+  final String text;
+  final int score;
+  final double? changePct;
+}
+
 class ResonanceSignal {
   ResonanceSignal({
     required this.summary,
@@ -5513,6 +5594,9 @@ class EtfPricingSignal {
     this.volumeRatio,
     this.dealAmount,
     this.totalShare,
+    this.shareChangePct,
+    this.shareSignalText,
+    this.shareSignalScore = 0,
   });
 
   final String code;
@@ -5523,6 +5607,9 @@ class EtfPricingSignal {
   final double? volumeRatio;
   final double? dealAmount;
   final double? totalShare;
+  final double? shareChangePct;
+  final String? shareSignalText;
+  final int shareSignalScore;
 }
 
 class YesterdayReview {
@@ -5572,6 +5659,8 @@ class MarketBreadthSignal {
     required this.risingCount,
     required this.fallingCount,
     required this.flatCount,
+    required this.limitUpCount,
+    required this.limitDownCount,
     required this.summary,
     required this.score,
   });
@@ -5579,6 +5668,8 @@ class MarketBreadthSignal {
   final int risingCount;
   final int fallingCount;
   final int flatCount;
+  final int limitUpCount;
+  final int limitDownCount;
   final String summary;
   final int score;
 }
@@ -8102,6 +8193,13 @@ List<DataTruthItem> realDataChecklist(FundAnalysis analysis) {
       available: analysis.announcements.isNotEmpty,
     ),
     DataTruthItem(
+      title: 'ETF折溢价/份额',
+      detail: analysis.decision.etfPricingState.contains('暂时还没拿齐')
+          ? '目标 ETF 的折溢价或份额变化还不完整，暂不把它当硬判断。'
+          : analysis.decision.etfPricingState,
+      available: !analysis.decision.etfPricingState.contains('暂时还没拿齐'),
+    ),
+    DataTruthItem(
       title: '收益日历',
       detail: '只按已确认份额和真实历史净值计算；旧持仓缺少份额时不会倒推补算。',
       available: analysis.settledItem.holdingLots.isNotEmpty,
@@ -8378,6 +8476,13 @@ String compactMoney(double value) {
   return '$sign¥${absValue.toStringAsFixed(0)}';
 }
 String pct(double value) => '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2)}%';
+
+String shareCountText(double value) {
+  final absValue = value.abs();
+  if (absValue >= 100000000) return '${(absValue / 100000000).toStringAsFixed(absValue >= 1000000000 ? 1 : 2)}亿份';
+  if (absValue >= 10000) return '${(absValue / 10000).toStringAsFixed(absValue >= 1000000 ? 1 : 2)}万份';
+  return '${absValue.toStringAsFixed(0)}份';
+}
 
 String cnAmount(double value) {
   final absValue = value.abs();
