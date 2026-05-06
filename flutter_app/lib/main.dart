@@ -981,7 +981,7 @@ class _PositionProfitCenterCardState extends State<PositionProfitCenterCard> {
             final hasReal = row?.profit != null;
             String bottomText = '';
             if (hasReal) {
-              bottomText = _unit == ProfitUnit.amount ? compactDayMoney(row!.profit!) : compactDayPercent(row.returnPct ?? 0);
+              bottomText = _unit == ProfitUnit.amount ? compactDayMoney(row!.profit!) : compactDayPercent(row!.returnPct ?? 0);
             } else if (isRestDay) {
               bottomText = '休';
             } else if (isToday && !widget.analysis.officialNavUpdated) {
