@@ -231,10 +231,6 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
                   if (_currentItems.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     HomeTodayTaskCard(items: _currentItems, analyses: _cache),
-                    const SizedBox(height: 12),
-                    ProfitCalendarCard(items: _currentItems, analyses: _cache),
-                    const SizedBox(height: 12),
-                    ProfitTrendCard(items: _currentItems, analyses: _cache),
                   ],
                   const SizedBox(height: 14),
                   if (_currentItems.isEmpty)
@@ -725,6 +721,662 @@ class ProfitTrendPainter extends CustomPainter {
   bool shouldRepaint(covariant ProfitTrendPainter oldDelegate) => oldDelegate.points != points;
 }
 
+class PositionProfitCenterCard extends StatefulWidget {
+  const PositionProfitCenterCard({
+    super.key,
+    required this.item,
+    required this.analysis,
+  });
+
+  final PortfolioItem item;
+  final FundAnalysis analysis;
+
+  @override
+  State<PositionProfitCenterCard> createState() => _PositionProfitCenterCardState();
+}
+
+class _PositionProfitCenterCardState extends State<PositionProfitCenterCard> {
+  ProfitCenterView _view = ProfitCenterView.calendar;
+  ProfitRange _range = ProfitRange.day;
+  ProfitUnit _unit = ProfitUnit.amount;
+  late DateTime _anchorMonth;
+  late DateTime _selectedDate;
+
+  @override
+  void initState() {
+    super.initState();
+    final latest = DateTime.tryParse(widget.analysis.latestDate) ?? DateTime.now();
+    _anchorMonth = monthStart(latest);
+    _selectedDate = normalizeDate(DateTime.now());
+  }
+
+  @override
+  void didUpdateWidget(covariant PositionProfitCenterCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final currentMonth = monthStart(DateTime.now());
+    if (_anchorMonth.isAfter(currentMonth)) {
+      _anchorMonth = currentMonth;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = buildPositionDailyProfits(widget.item, widget.analysis);
+    final realRows = rows.where((row) => row.isTradingDay && row.profit != null).toList();
+    if (realRows.isEmpty) {
+      return CardShell(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            Text('收益日历', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+            SizedBox(height: 8),
+            Text(
+              '这只持仓暂时还没有足够的真实份额记录和官方净值历史，所以这里先不展示收益日历和收益走势。',
+              style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final currentMonth = monthStart(DateTime.now());
+    final monthAnchor = _anchorMonth.isAfter(currentMonth) ? currentMonth : _anchorMonth;
+    final title = _view == ProfitCenterView.calendar ? '收益日历' : '收益走势';
+
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 6),
+          const Text(
+            '这里只展示真实份额和官方净值算出来的收益；没有真实数据的日期不会补出来。',
+            style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              CupertinoSlidingSegmentedControl<ProfitCenterView>(
+                groupValue: _view,
+                backgroundColor: AppColors.softGrey,
+                thumbColor: Colors.white,
+                children: const {
+                  ProfitCenterView.calendar: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Icon(CupertinoIcons.calendar, size: 18),
+                  ),
+                  ProfitCenterView.trend: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Icon(CupertinoIcons.chart_bar, size: 18),
+                  ),
+                },
+                onValueChanged: (value) {
+                  if (value == null) return;
+                  setState(() => _view = value);
+                },
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: CupertinoSlidingSegmentedControl<ProfitRange>(
+                  groupValue: _range,
+                  backgroundColor: AppColors.softGrey,
+                  thumbColor: Colors.white,
+                  children: const {
+                    ProfitRange.day: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Text('日', style: TextStyle(fontWeight: FontWeight.w900)),
+                    ),
+                    ProfitRange.week: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Text('周', style: TextStyle(fontWeight: FontWeight.w900)),
+                    ),
+                    ProfitRange.month: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Text('月', style: TextStyle(fontWeight: FontWeight.w900)),
+                    ),
+                    ProfitRange.year: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Text('年', style: TextStyle(fontWeight: FontWeight.w900)),
+                    ),
+                  },
+                  onValueChanged: (value) {
+                    if (value == null) return;
+                    setState(() => _range = value);
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              CupertinoSlidingSegmentedControl<ProfitUnit>(
+                groupValue: _unit,
+                backgroundColor: AppColors.softGrey,
+                thumbColor: Colors.white,
+                children: const {
+                  ProfitUnit.amount: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Text('¥', style: TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                  ProfitUnit.percent: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Text('%', style: TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                },
+                onValueChanged: (value) {
+                  if (value == null) return;
+                  setState(() => _unit = value);
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (_view == ProfitCenterView.calendar)
+            _buildCalendar(rows, realRows, monthAnchor)
+          else
+            _buildTrend(rows),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCalendar(List<PortfolioDailyProfit> rows, List<PortfolioDailyProfit> realRows, DateTime monthAnchor) {
+    if (_range == ProfitRange.day) {
+      return _buildDayCalendar(rows, realRows, monthAnchor);
+    }
+    if (_range == ProfitRange.week) {
+      final currentMonth = monthStart(DateTime.now());
+      final canForward = monthAnchor.isBefore(currentMonth);
+      final monthRows = rows.where((row) => row.date.year == monthAnchor.year && row.date.month == monthAnchor.month).toList();
+      final buckets = buildProfitBuckets(monthRows, ProfitRange.week);
+      return Column(
+        children: [
+          _buildCalendarNavigator(
+            label: '${monthAnchor.year}年 ${monthAnchor.month}月',
+            canForward: canForward,
+            onBack: () => setState(() => _anchorMonth = shiftMonth(_anchorMonth, -1)),
+            onForward: canForward ? () => setState(() => _anchorMonth = shiftMonth(_anchorMonth, 1)) : null,
+          ),
+          const SizedBox(height: 12),
+          _buildBucketWrap(buckets, emptyText: '这个月还没有可核对的周收益。'),
+        ],
+      );
+    }
+    if (_range == ProfitRange.month) {
+      final currentYear = DateTime.now().year;
+      final buckets = buildProfitBuckets(rows.where((row) => row.date.year == monthAnchor.year).toList(), ProfitRange.month);
+      final canForward = monthAnchor.year < currentYear;
+      return Column(
+        children: [
+          _buildCalendarNavigator(
+            label: '${monthAnchor.year}年',
+            canForward: canForward,
+            onBack: () => setState(() => _anchorMonth = DateTime(_anchorMonth.year - 1, _anchorMonth.month, 1)),
+            onForward: canForward ? () => setState(() => _anchorMonth = DateTime(_anchorMonth.year + 1, _anchorMonth.month, 1)) : null,
+          ),
+          const SizedBox(height: 12),
+          _buildBucketWrap(buckets, emptyText: '这一年还没有可核对的月收益。'),
+        ],
+      );
+    }
+
+    final buckets = buildProfitBuckets(rows, ProfitRange.year);
+    return _buildBucketWrap(buckets, emptyText: '暂时还没有可核对的年度收益。');
+  }
+
+  Widget _buildDayCalendar(List<PortfolioDailyProfit> rows, List<PortfolioDailyProfit> realRows, DateTime monthAnchor) {
+    final today = normalizeDate(DateTime.now());
+    final realMap = {for (final row in rows) dateText(row.date): row};
+    final firstRealDate = realRows.first.date;
+    final currentMonth = monthStart(today);
+    final canForward = monthAnchor.isBefore(currentMonth);
+    final days = daysInMonth(monthAnchor);
+    final firstDay = DateTime(monthAnchor.year, monthAnchor.month, 1);
+    final leading = firstDay.weekday % 7;
+    final cellCount = leading + days;
+    final weeks = (cellCount / 7).ceil();
+    final selected = _selectedDate.year == monthAnchor.year && _selectedDate.month == monthAnchor.month
+        ? _selectedDate
+        : DateTime(monthAnchor.year, monthAnchor.month, min(today.day, days));
+    final selectedRow = realMap[dateText(selected)];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildCalendarNavigator(
+          label: '${monthAnchor.year}年 ${monthAnchor.month}月',
+          canForward: canForward,
+          onBack: () => setState(() => _anchorMonth = shiftMonth(_anchorMonth, -1)),
+          onForward: canForward ? () => setState(() => _anchorMonth = shiftMonth(_anchorMonth, 1)) : null,
+        ),
+        const SizedBox(height: 12),
+        const Row(
+          children: [
+            Expanded(child: Center(child: Text('日', style: TextStyle(fontWeight: FontWeight.w900)))),
+            Expanded(child: Center(child: Text('一', style: TextStyle(fontWeight: FontWeight.w900)))),
+            Expanded(child: Center(child: Text('二', style: TextStyle(fontWeight: FontWeight.w900)))),
+            Expanded(child: Center(child: Text('三', style: TextStyle(fontWeight: FontWeight.w900)))),
+            Expanded(child: Center(child: Text('四', style: TextStyle(fontWeight: FontWeight.w900)))),
+            Expanded(child: Center(child: Text('五', style: TextStyle(fontWeight: FontWeight.w900)))),
+            Expanded(child: Center(child: Text('六', style: TextStyle(fontWeight: FontWeight.w900)))),
+          ],
+        ),
+        const SizedBox(height: 10),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: weeks * 7,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 7,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: 0.86,
+          ),
+          itemBuilder: (context, index) {
+            final dayIndex = index - leading + 1;
+            if (dayIndex < 1 || dayIndex > days) return const SizedBox.shrink();
+            final date = DateTime(monthAnchor.year, monthAnchor.month, dayIndex);
+            final row = realMap[dateText(date)];
+            final isToday = isSameDay(date, today);
+            final isSelected = isSameDay(date, selected);
+            final isRestDay = !isFundTradingDay(date);
+            final isFuture = date.isAfter(today);
+            final hasReal = row?.profit != null;
+            String bottomText = '';
+            if (hasReal) {
+              bottomText = _unit == ProfitUnit.amount ? compactDayMoney(row!.profit!) : compactDayPercent(row.returnPct ?? 0);
+            } else if (isRestDay) {
+              bottomText = '休';
+            } else if (isToday && !widget.analysis.officialNavUpdated) {
+              bottomText = '未更新';
+            } else if (!isFuture && !date.isBefore(firstRealDate)) {
+              bottomText = '待核对';
+            }
+            return _ProfitCalendarDayTile(
+              dayLabel: isToday ? '今' : '$dayIndex',
+              valueLabel: bottomText,
+              selected: isSelected,
+              today: isToday,
+              onTap: () => setState(() => _selectedDate = date),
+              tone: hasReal
+                  ? ((row!.profit ?? 0) >= 0 ? AppColors.red : AppColors.green)
+                  : AppColors.muted,
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+        _ProfitSelectedSummary(
+          date: selected,
+          row: selectedRow,
+          isTradingDay: isFundTradingDay(selected),
+          isToday: isSameDay(selected, today),
+          officialUpdated: widget.analysis.officialNavUpdated,
+          unit: _unit,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTrend(List<PortfolioDailyProfit> rows) {
+    final buckets = buildProfitBuckets(rows, _range);
+    final limited = _limitBucketsForTrend(buckets);
+    if (limited.length < 2) {
+      return const Text(
+        '真实收益点还不够，至少要有两个已结算交易日，收益走势才会显示。',
+        style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w800),
+      );
+    }
+    final points = <ProfitTrendPoint>[];
+    var runningAmount = 0.0;
+    var runningReturn = 1.0;
+    for (final bucket in limited) {
+      runningAmount += bucket.profit;
+      runningReturn *= 1 + bucket.returnPct / 100;
+      points.add(
+        ProfitTrendPoint(
+          label: bucket.label,
+          value: _unit == ProfitUnit.amount ? runningAmount : (runningReturn - 1) * 100,
+        ),
+      );
+    }
+    final latest = points.last.value;
+    final best = points.map((item) => item.value).reduce(max);
+    final worst = points.map((item) => item.value).reduce(min);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _Metric(
+                label: _unit == ProfitUnit.amount ? '累计收益' : '累计收益率',
+                value: _unit == ProfitUnit.amount ? signedMoney(latest) : pct(latest),
+                color: latest >= 0 ? AppColors.red : AppColors.green,
+              ),
+            ),
+            Expanded(
+              child: _Metric(
+                label: '区间高低',
+                value: _unit == ProfitUnit.amount
+                    ? '${compactDayMoney(best)} / ${compactDayMoney(worst)}'
+                    : '${compactDayPercent(best)} / ${compactDayPercent(worst)}',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 170,
+          child: CustomPaint(
+            painter: PositionProfitTrendPainter(points: points, unit: _unit),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<ProfitBucket> _limitBucketsForTrend(List<ProfitBucket> buckets) {
+    final limit = switch (_range) {
+      ProfitRange.day => 30,
+      ProfitRange.week => 16,
+      ProfitRange.month => 12,
+      ProfitRange.year => 6,
+    };
+    if (buckets.length <= limit) return buckets;
+    return buckets.sublist(buckets.length - limit);
+  }
+
+  Widget _buildCalendarNavigator({
+    required String label,
+    required VoidCallback onBack,
+    required bool canForward,
+    required VoidCallback? onForward,
+  }) {
+    return Row(
+      children: [
+        _CalendarArrowButton(icon: CupertinoIcons.chevron_left, onTap: onBack),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Container(
+            height: 56,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Text(label, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          ),
+        ),
+        const SizedBox(width: 10),
+        _CalendarArrowButton(
+          icon: CupertinoIcons.chevron_right,
+          onTap: canForward ? onForward : null,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBucketWrap(List<ProfitBucket> buckets, {required String emptyText}) {
+    if (buckets.isEmpty) {
+      return Text(
+        emptyText,
+        style: const TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w800),
+      );
+    }
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: buckets.map((bucket) {
+        final value = _unit == ProfitUnit.amount ? bucket.profit : bucket.returnPct;
+        final positive = value >= 0;
+        final label = _unit == ProfitUnit.amount ? signedMoney(value) : pct(value);
+        return Container(
+          width: 104,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.softGrey,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.line),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(bucket.label, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: positive ? AppColors.red : AppColors.green,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _CalendarArrowButton extends StatelessWidget {
+  const _CalendarArrowButton({
+    required this.icon,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        width: 58,
+        height: 56,
+        decoration: BoxDecoration(
+          color: onTap == null ? AppColors.softGrey : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Icon(icon, color: onTap == null ? AppColors.line : AppColors.muted),
+      ),
+    );
+  }
+}
+
+class _ProfitCalendarDayTile extends StatelessWidget {
+  const _ProfitCalendarDayTile({
+    required this.dayLabel,
+    required this.valueLabel,
+    required this.selected,
+    required this.today,
+    required this.tone,
+    required this.onTap,
+  });
+
+  final String dayLabel;
+  final String valueLabel;
+  final bool selected;
+  final bool today;
+  final Color tone;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = selected ? AppColors.ink.withOpacity(0.42) : AppColors.softGrey;
+    final dayColor = selected ? Colors.white : AppColors.ink;
+    final valueColor = selected ? Colors.white70 : (valueLabel == '休' || valueLabel == '未更新' || valueLabel == '待核对' ? AppColors.muted : tone);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        decoration: BoxDecoration(
+          color: valueLabel.isEmpty && !selected ? Colors.transparent : bg,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: selected ? AppShadows.card : null,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              dayLabel,
+              style: TextStyle(
+                color: dayColor,
+                fontSize: today ? 20 : 18,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              valueLabel,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: valueColor,
+                fontSize: 11,
+                height: 1.15,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfitSelectedSummary extends StatelessWidget {
+  const _ProfitSelectedSummary({
+    required this.date,
+    required this.row,
+    required this.isTradingDay,
+    required this.isToday,
+    required this.officialUpdated,
+    required this.unit,
+  });
+
+  final DateTime date;
+  final PortfolioDailyProfit? row;
+  final bool isTradingDay;
+  final bool isToday;
+  final bool officialUpdated;
+  final ProfitUnit unit;
+
+  @override
+  Widget build(BuildContext context) {
+    late final String text;
+    late final Color color;
+    if (row?.profit != null) {
+      final amountText = signedMoney(row!.profit!);
+      final pctText = pct(row!.returnPct ?? 0);
+      text = '${date.month}月${date.day}日：${unit == ProfitUnit.amount ? amountText : pctText}';
+      color = (row!.profit ?? 0) >= 0 ? AppColors.red : AppColors.green;
+    } else if (!isTradingDay) {
+      text = '${date.month}月${date.day}日：休市，不产生真实收益。';
+      color = AppColors.muted;
+    } else if (isToday && !officialUpdated) {
+      text = '${date.month}月${date.day}日：官方净值还没更新，今晚更新后这里会显示真实收益。';
+      color = AppColors.muted;
+    } else {
+      text = '${date.month}月${date.day}日：这一天没有足够的真实份额记录，先不补算。';
+      color = AppColors.muted;
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.softBlue,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(color: color == AppColors.muted ? AppColors.ink : color, height: 1.4, fontWeight: FontWeight.w800),
+      ),
+    );
+  }
+}
+
+class PositionProfitTrendPainter extends CustomPainter {
+  const PositionProfitTrendPainter({
+    required this.points,
+    required this.unit,
+  });
+
+  final List<ProfitTrendPoint> points;
+  final ProfitUnit unit;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+    const left = 42.0;
+    const right = 10.0;
+    const top = 8.0;
+    const bottom = 28.0;
+    final plot = Rect.fromLTRB(left, top, size.width - right, size.height - bottom);
+    final values = points.map((item) => item.value).toList();
+    final maxAbs = max(1.0, values.map((item) => item.abs()).reduce(max));
+    final gridPaint = Paint()
+      ..color = AppColors.line
+      ..strokeWidth = 1;
+    final zeroY = plot.center.dy;
+    canvas.drawLine(Offset(plot.left, zeroY), Offset(plot.right, zeroY), gridPaint);
+
+    final labelPainter = TextPainter(textDirection: TextDirection.ltr);
+    void label(String text, Offset offset) {
+      labelPainter.text = TextSpan(
+        text: text,
+        style: const TextStyle(color: AppColors.muted, fontSize: 10, fontWeight: FontWeight.w800),
+      );
+      labelPainter.layout();
+      labelPainter.paint(canvas, offset);
+    }
+
+    label(_trendAxisLabel(maxAbs), Offset(0, plot.top));
+    label('0', Offset(0, zeroY - 7));
+    label(_trendAxisLabel(-maxAbs), Offset(0, plot.bottom - 12));
+
+    final path = Path();
+    for (var i = 0; i < points.length; i += 1) {
+      final x = plot.left + (plot.width * i / max(1, points.length - 1));
+      final y = plot.center.dy - (points[i].value / maxAbs) * (plot.height / 2);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+
+    final linePaint = Paint()
+      ..color = points.last.value >= 0 ? AppColors.red : AppColors.green
+      ..strokeWidth = 2.6
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, linePaint);
+
+    label(points.first.label, Offset(plot.left, plot.bottom + 8));
+    final lastLabel = points.last.label;
+    label(lastLabel, Offset(plot.right - max(36, lastLabel.length * 8), plot.bottom + 8));
+  }
+
+  String _trendAxisLabel(double value) {
+    if (unit == ProfitUnit.percent) return pct(value);
+    return compactDayMoney(value);
+  }
+
+  @override
+  bool shouldRepaint(covariant PositionProfitTrendPainter oldDelegate) {
+    return oldDelegate.points != points || oldDelegate.unit != unit;
+  }
+}
+
 class FundPositionCard extends StatelessWidget {
   const FundPositionCard({
     super.key,
@@ -946,6 +1598,8 @@ class _FundDetailPageState extends State<FundDetailPage> {
               ),
               const SizedBox(height: 12),
             ],
+            PositionProfitCenterCard(item: _item, analysis: _analysis),
+            const SizedBox(height: 12),
             CardShell(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -4266,20 +4920,60 @@ class PortfolioDailyProfit {
     required this.date,
     required this.isTradingDay,
     this.profit,
+    this.returnPct,
+    this.baseValue,
     this.cumulative,
   });
 
   final DateTime date;
   final bool isTradingDay;
   final double? profit;
+  final double? returnPct;
+  final double? baseValue;
   final double? cumulative;
 
   PortfolioDailyProfit copyWith({double? cumulative}) => PortfolioDailyProfit(
         date: date,
         isTradingDay: isTradingDay,
         profit: profit,
+        returnPct: returnPct,
+        baseValue: baseValue,
         cumulative: cumulative ?? this.cumulative,
       );
+}
+
+enum ProfitCenterView { calendar, trend }
+
+enum ProfitRange { day, week, month, year }
+
+enum ProfitUnit { amount, percent }
+
+class ProfitBucket {
+  const ProfitBucket({
+    required this.key,
+    required this.date,
+    required this.label,
+    required this.profit,
+    required this.returnPct,
+    required this.tradingDays,
+  });
+
+  final String key;
+  final DateTime date;
+  final String label;
+  final double profit;
+  final double returnPct;
+  final int tradingDays;
+}
+
+class ProfitTrendPoint {
+  const ProfitTrendPoint({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final double value;
 }
 
 class DataTruthItem {
@@ -5935,19 +6629,20 @@ List<PortfolioDailyProfit> buildPortfolioDailyProfits(
 }) {
   final today = DateTime.now();
   final start = DateTime(today.year, today.month, today.day).subtract(Duration(days: days - 1));
-    final rows = <PortfolioDailyProfit>[];
-    final navCache = <String, Map<String, NavPoint>>{};
-    for (var i = 0; i < days; i += 1) {
+  final rows = <PortfolioDailyProfit>[];
+  final navCache = <String, Map<String, NavPoint>>{};
+  for (var i = 0; i < days; i += 1) {
     final date = start.add(Duration(days: i));
     final key = dateText(date);
     final trading = isFundTradingDay(date);
     double profit = 0;
+    double baseValue = 0;
     var hasAnyRealNav = false;
 
-      if (trading) {
-        for (final item in items) {
-          final analysis = analyses[item.code];
-          if (analysis == null) continue;
+    if (trading) {
+      for (final item in items) {
+        final analysis = analyses[item.code];
+        if (analysis == null) continue;
         final navs = navCache.putIfAbsent(
           analysis.code,
           () => {
@@ -5958,9 +6653,11 @@ List<PortfolioDailyProfit> buildPortfolioDailyProfits(
         if (current == null) continue;
         final previous = previousNavPointBefore(analysis.navPoints, key);
         if (previous == null || previous.value <= 0) continue;
-        final shares = sharesHeldOnDate(item, key);
+        final shares = sharesHeldOnDate(item, previous.date);
         if (shares <= 0) continue;
+        final previousValue = shares * previous.value;
         profit += shares * (current.value - previous.value);
+        baseValue += previousValue;
         hasAnyRealNav = true;
       }
     }
@@ -5970,10 +6667,24 @@ List<PortfolioDailyProfit> buildPortfolioDailyProfits(
         date: date,
         isTradingDay: trading,
         profit: trading && hasAnyRealNav ? profit : null,
+        returnPct: trading && hasAnyRealNav && baseValue > 0 ? profit / baseValue * 100 : null,
+        baseValue: trading && hasAnyRealNav ? baseValue : null,
       ),
     );
   }
   return rows;
+}
+
+List<PortfolioDailyProfit> buildPositionDailyProfits(
+  PortfolioItem item,
+  FundAnalysis analysis, {
+  int days = 540,
+}) {
+  return buildPortfolioDailyProfits(
+    [item],
+    {analysis.code: analysis},
+    days: days,
+  );
 }
 
 NavPoint? previousNavPointBefore(List<NavPoint> points, String date) {
@@ -5990,6 +6701,89 @@ double sharesHeldOnDate(PortfolioItem item, String date) {
       .where((lot) => compareDateText(lot.confirmDate, date) <= 0)
       .map((lot) => lot.shares)
       .sum;
+}
+
+DateTime normalizeDate(DateTime value) => DateTime(value.year, value.month, value.day);
+
+bool isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
+DateTime monthStart(DateTime value) => DateTime(value.year, value.month, 1);
+
+DateTime shiftMonth(DateTime value, int delta) {
+  final total = value.year * 12 + value.month - 1 + delta;
+  final year = total ~/ 12;
+  final month = total % 12 + 1;
+  return DateTime(year, month, 1);
+}
+
+int daysInMonth(DateTime value) => DateTime(value.year, value.month + 1, 0).day;
+
+DateTime weekStart(DateTime value) {
+  final normalized = normalizeDate(value);
+  final offset = normalized.weekday % 7;
+  return normalized.subtract(Duration(days: offset));
+}
+
+List<ProfitBucket> buildProfitBuckets(List<PortfolioDailyProfit> rows, ProfitRange range) {
+  final groups = <String, List<PortfolioDailyProfit>>{};
+  final groupDates = <String, DateTime>{};
+  final labels = <String, String>{};
+
+  for (final row in rows.where((item) => item.isTradingDay && item.profit != null)) {
+    late final String key;
+    late final DateTime date;
+    late final String label;
+    switch (range) {
+      case ProfitRange.day:
+        date = normalizeDate(row.date);
+        key = dateText(date);
+        label = '${date.month}/${date.day}';
+        break;
+      case ProfitRange.week:
+        final start = weekStart(row.date);
+        final end = start.add(const Duration(days: 6));
+        date = start;
+        key = dateText(start);
+        label = '${start.month}/${start.day}-${end.month}/${end.day}';
+        break;
+      case ProfitRange.month:
+        date = monthStart(row.date);
+        key = '${date.year}-${date.month.toString().padLeft(2, '0')}';
+        label = '${date.month}月';
+        break;
+      case ProfitRange.year:
+        date = DateTime(row.date.year, 1, 1);
+        key = '${date.year}';
+        label = '${date.year}年';
+        break;
+    }
+    groups.putIfAbsent(key, () => <PortfolioDailyProfit>[]).add(row);
+    groupDates.putIfAbsent(key, () => date);
+    labels.putIfAbsent(key, () => label);
+  }
+
+  final result = <ProfitBucket>[];
+  final sortedKeys = groups.keys.toList()
+    ..sort((a, b) => groupDates[a]!.compareTo(groupDates[b]!));
+  for (final key in sortedKeys) {
+    final group = groups[key]!;
+    final profit = group.fold<double>(0, (sum, row) => sum + (row.profit ?? 0));
+    var compounded = 1.0;
+    for (final row in group) {
+      compounded *= 1 + ((row.returnPct ?? 0) / 100);
+    }
+    result.add(
+      ProfitBucket(
+        key: key,
+        date: groupDates[key]!,
+        label: labels[key]!,
+        profit: profit,
+        returnPct: (compounded - 1) * 100,
+        tradingDays: group.length,
+      ),
+    );
+  }
+  return result;
 }
 
 int? durationUpperBoundDays(String summary) {
@@ -7401,6 +8195,26 @@ String money(double value) {
 }
 
 String signedMoney(double value) => value >= 0 ? '+${money(value)}' : '-${money(value.abs())}';
+String compactDayMoney(double value) {
+  final sign = value > 0
+      ? '+'
+      : value < 0
+          ? '-'
+          : '';
+  final absValue = value.abs();
+  if (absValue >= 1000) return '$sign${(absValue / 1000).toStringAsFixed(1)}k';
+  return '$sign${absValue.toStringAsFixed(absValue >= 100 ? 0 : 1)}';
+}
+
+String compactDayPercent(double value) {
+  final sign = value > 0
+      ? '+'
+      : value < 0
+          ? '-'
+          : '';
+  return '$sign${value.abs().toStringAsFixed(1)}%';
+}
+
 String compactMoney(double value) {
   final sign = value > 0
       ? '+'
