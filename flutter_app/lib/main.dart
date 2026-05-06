@@ -43,9 +43,12 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
   Timer? _autoRefreshTimer;
   List<PortfolioItem> _owned = [];
   List<PortfolioItem> _simulated = [];
+  MonthlyRecommendation? _monthlyRecommendation;
+  DateTime? _recommendationLoadedAt;
   int _tab = 0;
   bool _loading = true;
   bool _refreshing = false;
+  bool _recommendationLoading = false;
 
   List<PortfolioItem> get _currentItems => _tab == 0 ? _owned : _simulated;
   String get _currentTitle => _tab == 0 ? '持有持仓' : '模拟持仓';
@@ -81,7 +84,8 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       _simulated = _decodePortfolio(prefs.getString('simulated_portfolio'));
       _loading = false;
     });
-    await _refreshCurrent(clearFirst: true);
+    unawaited(_refreshMonthlyRecommendation(force: true));
+    await _refreshCurrent(clearFirst: true, refreshRecommendation: false);
   }
 
   List<PortfolioItem> _decodePortfolio(String? value) {
@@ -95,7 +99,14 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     await prefs.setString(_storageKey, jsonEncode(_currentItems.map((item) => item.toJson()).toList()));
   }
 
-  Future<void> _refreshCurrent({bool clearFirst = false}) async {
+  Future<void> _refreshCurrent({
+    bool clearFirst = false,
+    bool refreshRecommendation = true,
+    bool forceRecommendation = false,
+  }) async {
+    if (refreshRecommendation) {
+      unawaited(_refreshMonthlyRecommendation(force: forceRecommendation));
+    }
     final items = List<PortfolioItem>.from(_currentItems);
     if (items.isEmpty) return;
     if (_refreshing) return;
@@ -118,6 +129,35 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       if (changedItems) await _saveCurrent();
     } finally {
       _refreshing = false;
+    }
+  }
+
+  Future<void> _refreshMonthlyRecommendation({bool force = false}) async {
+    if (_recommendationLoading) return;
+    final lastLoadedAt = _recommendationLoadedAt;
+    if (!force && lastLoadedAt != null && DateTime.now().difference(lastLoadedAt) < const Duration(minutes: 45)) {
+      return;
+    }
+    if (mounted) {
+      setState(() => _recommendationLoading = true);
+    } else {
+      _recommendationLoading = true;
+    }
+    try {
+      final recommendation = await _service.loadMonthlyRecommendation();
+      if (!mounted) return;
+      setState(() {
+        _monthlyRecommendation = recommendation;
+        _recommendationLoadedAt = DateTime.now();
+      });
+    } catch (_) {
+      // Keep the previous monthly pick when public endpoints are slow.
+    } finally {
+      if (mounted) {
+        setState(() => _recommendationLoading = false);
+      } else {
+        _recommendationLoading = false;
+      }
     }
   }
 
@@ -208,7 +248,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
         selectedIndex: _tab,
         onDestinationSelected: (index) async {
           setState(() => _tab = index);
-          await _refreshCurrent(clearFirst: true);
+          await _refreshCurrent(clearFirst: true, forceRecommendation: true);
         },
         destinations: const [
           NavigationDestination(icon: Icon(CupertinoIcons.briefcase), label: '持有'),
@@ -218,7 +258,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       body: _loading
           ? const Center(child: CupertinoActivityIndicator())
           : RefreshIndicator(
-              onRefresh: () => _refreshCurrent(clearFirst: true),
+              onRefresh: () => _refreshCurrent(clearFirst: true, forceRecommendation: true),
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 96),
@@ -231,6 +271,13 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
                   if (_currentItems.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     HomeTodayTaskCard(items: _currentItems, analyses: _cache),
+                  ],
+                  if (_monthlyRecommendation != null || _recommendationLoading) ...[
+                    const SizedBox(height: 12),
+                    MonthlyRecommendationCard(
+                      recommendation: _monthlyRecommendation,
+                      loading: _recommendationLoading,
+                    ),
                   ],
                   const SizedBox(height: 14),
                   if (_currentItems.isEmpty)
@@ -428,6 +475,116 @@ class HomeTodayTaskCard extends StatelessWidget {
           _TaskLine(icon: CupertinoIcons.moon_stars, text: navStatus),
           const SizedBox(height: 8),
           _TaskLine(icon: CupertinoIcons.calendar, text: pendingText),
+        ],
+      ),
+    );
+  }
+}
+
+class MonthlyRecommendationCard extends StatelessWidget {
+  const MonthlyRecommendationCard({
+    super.key,
+    required this.recommendation,
+    required this.loading,
+  });
+
+  final MonthlyRecommendation? recommendation;
+  final bool loading;
+
+  @override
+  Widget build(BuildContext context) {
+    if (recommendation == null) {
+      return CardShell(
+        child: Row(
+          children: [
+            if (loading) ...[
+              const CupertinoActivityIndicator(),
+              const SizedBox(width: 10),
+            ],
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('本月特别推荐', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+                  SizedBox(height: 6),
+                  Text(
+                    '正在从更容易判断的国内指数 / ETF 联接池里筛选本月更值得买的基金。',
+                    style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final analysis = recommendation!.analysis;
+    final actionColor = recommendation!.buySuggested
+        ? AppColors.red
+        : analysis.sellRatio > 0
+            ? AppColors.green
+            : AppColors.blue;
+
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text('本月特别推荐', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+              ),
+              Pill(text: monthLabel(DateTime.now()), color: AppColors.blue),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '只从更容易判断的国内指数 / ETF 联接池里筛选，尽量避开主动调仓和时差带来的误差。',
+            style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 12),
+          Text(analysis.name, style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w900, height: 1.1)),
+          const SizedBox(height: 4),
+          Text(
+            '${analysis.code} · ${recommendation!.candidate.category}',
+            style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              Pill(text: recommendation!.actionLabel, color: actionColor),
+              Pill(text: '明天向上 ${analysis.probabilityUp.toStringAsFixed(0)}%', color: AppColors.red),
+              Pill(text: '置信度 ${analysis.confidence}', color: AppColors.muted),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _Metric(label: '后面几天', value: analysis.futureDaysText)),
+              const SizedBox(width: 12),
+              Expanded(child: _Metric(label: '波动大小', value: analysis.volatilityText)),
+              const SizedBox(width: 12),
+              Expanded(child: _Metric(label: '下跌风险', value: analysis.downsideRiskText)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            recommendation!.headline,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, height: 1.25),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            recommendation!.reason,
+            style: const TextStyle(height: 1.5, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            recommendation!.footnote,
+            style: const TextStyle(color: AppColors.muted, height: 1.45, fontSize: 12, fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );
@@ -3195,8 +3352,68 @@ class Pill extends StatelessWidget {
   }
 }
 
+const monthlyRecommendationPool = <RecommendationCandidate>[
+  RecommendationCandidate(
+    code: '110020',
+    category: '宽基底仓',
+    note: '更适合做本月底仓观察，风格偏均衡。',
+  ),
+  RecommendationCandidate(
+    code: '160119',
+    category: '中盘均衡',
+    note: '更关注市场中枢和广度修复，不靠单一赛道搏波动。',
+  ),
+  RecommendationCandidate(
+    code: '008282',
+    category: '半导体景气',
+    note: '更依赖景气和资金合力，只有强信号出现时才值得出手。',
+  ),
+  RecommendationCandidate(
+    code: '012863',
+    category: '电池修复',
+    note: '更看重板块资金、核心重仓股和商品链情绪是否一起回暖。',
+  ),
+  RecommendationCandidate(
+    code: '161725',
+    category: '消费修复',
+    note: '更适合看消费情绪和龙头权重股是否同步回暖。',
+  ),
+  RecommendationCandidate(
+    code: '001180',
+    category: '医药防守',
+    note: '更适合用来判断防守风格是否重新占优。',
+  ),
+];
+
 class FundService {
   final http.Client _client = http.Client();
+
+  Future<MonthlyRecommendation> loadMonthlyRecommendation() async {
+    final picks = <MonthlyRecommendation>[];
+    for (final candidate in monthlyRecommendationPool) {
+      try {
+        final analysis = await load(
+          PortfolioItem(
+            code: candidate.code,
+            amount: 1000,
+            untrackedAmount: 1000,
+          ),
+        );
+        picks.add(_buildMonthlyRecommendation(candidate, analysis));
+      } catch (_) {
+        continue;
+      }
+    }
+    if (picks.isEmpty) {
+      throw Exception('本月推荐暂时没有拿到足够的真实数据');
+    }
+    picks.sort((a, b) {
+      final byScore = b.score.compareTo(a.score);
+      if (byScore != 0) return byScore;
+      return b.analysis.probabilityUp.compareTo(a.analysis.probabilityUp);
+    });
+    return picks.first;
+  }
 
   Future<FundAnalysis> load(PortfolioItem item, {double totalCapital = 0}) async {
     final code = item.code;
@@ -3264,6 +3481,70 @@ class FundService {
             yesterdayReview: yesterdayReview,
           );
     return _applyLocks(code, live.copyWith(yesterdayReview: yesterdayReview));
+  }
+
+  MonthlyRecommendation _buildMonthlyRecommendation(RecommendationCandidate candidate, FundAnalysis analysis) {
+    final recentReturns60 = recentReturns(analysis.navPoints, 60);
+    final recent60 = recentReturns60.sum;
+    final drawdownYear = maxDrawdown(analysis.navPoints.takeLast(min(250, analysis.navPoints.length))) * 100;
+    var score = 0.0;
+    score += (analysis.probabilityUp - 50) * 1.2;
+    score += analysis.decision.temperatureScore * 0.18;
+    score += analysis.realtimeAvailable ? 4 : -3;
+    score += analysis.intradayPoints.isNotEmpty ? 4 : -2;
+    score += analysis.holdings.isNotEmpty ? 6 : -5;
+    score += analysis.announcements.isNotEmpty ? 2 : 0;
+    score += toneScoreForRecommendation(analysis.decision.valuationTone, good: 12, neutral: 2, bad: -12);
+    score += toneScoreForRecommendation(analysis.decision.trendTone, good: 10, neutral: 1, bad: -10);
+    score += toneScoreForRecommendation(analysis.decision.smartMoneyTone, good: 10, neutral: 0, bad: -12);
+    score += toneScoreForRecommendation(analysis.decision.etfPricingTone, good: 6, neutral: 1, bad: -8);
+    score += toneScoreForRecommendation(analysis.decision.durationTone, good: 8, neutral: 1, bad: -12);
+    score += toneScoreForRecommendation(analysis.decision.holdingCycleTone, good: 4, neutral: 0, bad: -14);
+    score += volatilityScoreForRecommendation(analysis.volatilityText);
+    score += downsideRiskScoreForRecommendation(analysis.downsideRiskText);
+    score += trendTextScoreForRecommendation(analysis.tomorrowTrend);
+    score += futureDaysScoreForRecommendation(analysis.futureDaysText);
+    score += actionScoreForRecommendation(analysis);
+    score += confidenceScoreForRecommendation(analysis.confidence);
+    score += recent60 >= 0 ? min(12, recent60 * 1.3) : max(-12, recent60 * 1.0);
+    score += drawdownYear <= -20 ? 5 : drawdownYear <= -12 ? 2 : drawdownYear >= -4 ? -4 : 0;
+
+    final buySuggested = analysis.buyRatio > 0 &&
+        score >= 34 &&
+        analysis.probabilityUp >= 60 &&
+        analysis.downsideRiskText != '高' &&
+        analysis.confidence != '极低' &&
+        analysis.decision.holdingCycleTone != 'bad';
+
+    final actionLabel = buySuggested
+        ? analysis.buyRatio >= 0.30
+            ? '大额买入'
+            : analysis.buyRatio >= 0.10
+                ? '分批买入'
+                : '小额试探'
+        : analysis.sellRatio > 0 || analysis.downsideRiskText == '高'
+            ? '先别急着买'
+            : '先放观察名单';
+
+    final headline = buySuggested
+        ? '这个月更值得优先看的，是 ${analysis.name}。'
+        : '这个月候选池里暂时排第一的，是 ${analysis.name}，但现在还没到舒服的重仓买点。';
+
+    final reason = buildMonthlyRecommendationReason(candidate, analysis, buySuggested);
+    final footnote = buySuggested
+        ? '${candidate.note} 只有当板块资金、尾盘承接和事件风险没有一起转坏时，才按当前建议执行。'
+        : '${candidate.note} 它只是本月候选池里当前最稳的一只，不代表立刻就要重仓买进去。';
+
+    return MonthlyRecommendation(
+      candidate: candidate,
+      analysis: analysis,
+      score: score,
+      buySuggested: buySuggested,
+      headline: headline,
+      actionLabel: actionLabel,
+      reason: reason,
+      footnote: footnote,
+    );
   }
 
   Future<FundBase> _loadFundBase(String code) async {
@@ -5206,6 +5487,40 @@ class DataTruthItem {
   final String title;
   final String detail;
   final bool available;
+}
+
+class RecommendationCandidate {
+  const RecommendationCandidate({
+    required this.code,
+    required this.category,
+    required this.note,
+  });
+
+  final String code;
+  final String category;
+  final String note;
+}
+
+class MonthlyRecommendation {
+  const MonthlyRecommendation({
+    required this.candidate,
+    required this.analysis,
+    required this.score,
+    required this.buySuggested,
+    required this.headline,
+    required this.actionLabel,
+    required this.reason,
+    required this.footnote,
+  });
+
+  final RecommendationCandidate candidate;
+  final FundAnalysis analysis;
+  final double score;
+  final bool buySuggested;
+  final String headline;
+  final String actionLabel;
+  final String reason;
+  final String footnote;
 }
 
 class FundBase {
@@ -8028,6 +8343,137 @@ String ratioText(double value) => '${(value * 100).toStringAsFixed(0)}%';
 String operationRatioText(double value, {required bool sell}) {
   if (sell && value >= 0.995) return '100%（全部）';
   return ratioText(value);
+}
+
+String monthLabel(DateTime value) => '${value.month}月';
+
+double toneScoreForRecommendation(String tone, {required double good, required double neutral, required double bad}) {
+  switch (tone) {
+    case 'good':
+      return good;
+    case 'bad':
+      return bad;
+    default:
+      return neutral;
+  }
+}
+
+double confidenceScoreForRecommendation(String confidence) {
+  switch (confidence) {
+    case '中':
+      return 8;
+    case '中低':
+      return 2;
+    case '低':
+      return -6;
+    case '极低':
+      return -20;
+    default:
+      return 0;
+  }
+}
+
+double volatilityScoreForRecommendation(String text) {
+  switch (text) {
+    case '波动低':
+      return 8;
+    case '波动中':
+      return 3;
+    case '波动高':
+      return -10;
+    default:
+      return 0;
+  }
+}
+
+double downsideRiskScoreForRecommendation(String text) {
+  switch (text) {
+    case '低':
+      return 10;
+    case '中':
+      return 2;
+    case '高':
+      return -18;
+    default:
+      return 0;
+  }
+}
+
+double trendTextScoreForRecommendation(String text) {
+  if (text.contains('大概率会大涨')) return 18;
+  if (text.contains('大概率会涨')) return 12;
+  if (text.contains('小概率会涨')) return 4;
+  if (text.contains('大概率会大跌')) return -24;
+  if (text.contains('大概率会跌')) return -16;
+  if (text.contains('小概率会跌')) return -6;
+  return 0;
+}
+
+double futureDaysScoreForRecommendation(String text) {
+  if (containsAnyKeyword(text, const ['可能涨2-3天', '可能涨3-5天', '偏强'])) return 10;
+  if (containsAnyKeyword(text, const ['可能跌1-2天', '风险高', '偏弱'])) return -10;
+  return 0;
+}
+
+double actionScoreForRecommendation(FundAnalysis analysis) {
+  if (analysis.sellRatio >= 0.995) return -80;
+  if (analysis.sellRatio > 0) return -28;
+  if (analysis.buyRatio >= 0.30) return 24;
+  if (analysis.buyRatio >= 0.10) return 14;
+  if (analysis.buyRatio > 0) return 8;
+  if (analysis.action.contains('观望') || analysis.action.contains('不动')) return -4;
+  return 0;
+}
+
+String buildMonthlyRecommendationReason(RecommendationCandidate candidate, FundAnalysis analysis, bool buySuggested) {
+  final positives = <String>[];
+  final cautions = <String>[];
+
+  if (analysis.decision.valuationTone == 'good') {
+    positives.add('板块资金更像在回流');
+  } else if (analysis.decision.valuationTone == 'bad') {
+    cautions.add('板块资金还没完全站到多头这边');
+  }
+
+  if (analysis.decision.trendTone == 'good') {
+    positives.add('尾盘承接还在');
+  } else if (analysis.decision.trendTone == 'bad') {
+    cautions.add('尾盘没看到特别强的抢筹');
+  }
+
+  if (analysis.decision.smartMoneyTone == 'good') {
+    positives.add('机构和大单没有明显撤退');
+  } else if (analysis.decision.smartMoneyTone == 'bad') {
+    cautions.add('聪明资金还偏谨慎');
+  }
+
+  if (analysis.decision.etfPricingTone == 'good') {
+    positives.add('ETF折溢价和份额没有拖后腿');
+  } else if (analysis.decision.etfPricingTone == 'bad') {
+    cautions.add('ETF情绪或份额变化还在压制判断');
+  }
+
+  if (analysis.decision.holdingCycleTone == 'bad') {
+    cautions.add('未来一周的手续费或事件风险还没放下');
+  }
+
+  if (analysis.downsideRiskText == '高') {
+    cautions.add('后面几天下跌风险还是偏高');
+  } else if (analysis.downsideRiskText == '低') {
+    positives.add('下跌风险没有压过机会');
+  }
+
+  final positivesText = positives.take(3).join('、');
+  final cautionsText = cautions.take(2).join('、');
+
+  if (buySuggested) {
+    final core = positivesText.isEmpty ? '当前多头信号更完整' : positivesText;
+    return '它能排到本月第一，主要因为 $core。明天向上概率约 ${analysis.probabilityUp.toStringAsFixed(0)}%，${analysis.futureDaysText}，${analysis.volatilityText}，更适合按比例分批布局。';
+  }
+
+  final core = positivesText.isEmpty ? '它在候选池里相对更稳' : positivesText;
+  final caution = cautionsText.isEmpty ? '但信号还没强到能直接重仓买入' : '但 $cautionsText';
+  return '它现在能排到本月候选池前面，主要因为 $core；$caution。明天向上概率约 ${analysis.probabilityUp.toStringAsFixed(0)}%，先看比立刻重仓更稳。';
 }
 
 int homeTaskScore(FundAnalysis analysis) {
