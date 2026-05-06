@@ -3967,7 +3967,7 @@ class FundService {
 
   Future<bool> _markReviewLearningOnce(String code, String date) async {
     final prefs = await SharedPreferences.getInstance();
-    final key = 'review_learned_$code_$date';
+    final key = 'review_learned_${code}_$date';
     if (prefs.getBool(key) == true) return false;
     await prefs.setBool(key, true);
     return true;
