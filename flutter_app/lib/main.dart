@@ -43,12 +43,9 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
   Timer? _autoRefreshTimer;
   List<PortfolioItem> _owned = [];
   List<PortfolioItem> _simulated = [];
-  MonthlyRecommendation? _monthlyRecommendation;
-  DateTime? _recommendationLoadedAt;
   int _tab = 0;
   bool _loading = true;
   bool _refreshing = false;
-  bool _recommendationLoading = false;
 
   List<PortfolioItem> get _currentItems => _tab == 0 ? _owned : _simulated;
   String get _currentTitle => _tab == 0 ? '持有持仓' : '模拟持仓';
@@ -84,8 +81,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       _simulated = _decodePortfolio(prefs.getString('simulated_portfolio'));
       _loading = false;
     });
-    unawaited(_refreshMonthlyRecommendation(force: true));
-    await _refreshCurrent(clearFirst: true, refreshRecommendation: false);
+    await _refreshCurrent(clearFirst: true);
   }
 
   List<PortfolioItem> _decodePortfolio(String? value) {
@@ -101,12 +97,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
 
   Future<void> _refreshCurrent({
     bool clearFirst = false,
-    bool refreshRecommendation = true,
-    bool forceRecommendation = false,
   }) async {
-    if (refreshRecommendation) {
-      unawaited(_refreshMonthlyRecommendation(force: forceRecommendation));
-    }
     final items = List<PortfolioItem>.from(_currentItems);
     if (items.isEmpty) return;
     if (_refreshing) return;
@@ -129,35 +120,6 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       if (changedItems) await _saveCurrent();
     } finally {
       _refreshing = false;
-    }
-  }
-
-  Future<void> _refreshMonthlyRecommendation({bool force = false}) async {
-    if (_recommendationLoading) return;
-    final lastLoadedAt = _recommendationLoadedAt;
-    if (!force && lastLoadedAt != null && DateTime.now().difference(lastLoadedAt) < const Duration(minutes: 45)) {
-      return;
-    }
-    if (mounted) {
-      setState(() => _recommendationLoading = true);
-    } else {
-      _recommendationLoading = true;
-    }
-    try {
-      final recommendation = await _service.loadMonthlyRecommendation();
-      if (!mounted) return;
-      setState(() {
-        _monthlyRecommendation = recommendation;
-        _recommendationLoadedAt = DateTime.now();
-      });
-    } catch (_) {
-      // Keep the previous monthly pick when public endpoints are slow.
-    } finally {
-      if (mounted) {
-        setState(() => _recommendationLoading = false);
-      } else {
-        _recommendationLoading = false;
-      }
     }
   }
 
@@ -248,7 +210,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
         selectedIndex: _tab,
         onDestinationSelected: (index) async {
           setState(() => _tab = index);
-          await _refreshCurrent(clearFirst: true, forceRecommendation: true);
+          await _refreshCurrent(clearFirst: true);
         },
         destinations: const [
           NavigationDestination(icon: Icon(CupertinoIcons.briefcase), label: '持有'),
@@ -258,7 +220,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       body: _loading
           ? const Center(child: CupertinoActivityIndicator())
           : RefreshIndicator(
-              onRefresh: () => _refreshCurrent(clearFirst: true, forceRecommendation: true),
+            onRefresh: () => _refreshCurrent(clearFirst: true),
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 96),
@@ -271,13 +233,6 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
                   if (_currentItems.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     HomeTodayTaskCard(items: _currentItems, analyses: _cache),
-                  ],
-                  if (_monthlyRecommendation != null || _recommendationLoading) ...[
-                    const SizedBox(height: 12),
-                    MonthlyRecommendationCard(
-                      recommendation: _monthlyRecommendation,
-                      loading: _recommendationLoading,
-                    ),
                   ],
                   const SizedBox(height: 14),
                   if (_currentItems.isEmpty)
@@ -7397,9 +7352,11 @@ TailChange? tailChangeBetween(List<TrendPoint> points, int startHour, int startM
   end ??= today.last;
   start ??= today.first;
   if (end.time.isBefore(start.time) || start.close <= 0) return null;
-  final segmentPoints = today.where((item) => !item.time.isBefore(start.time) && !item.time.isAfter(end.time)).toList();
+  final startPoint = start;
+  final endPoint = end;
+  final segmentPoints = today.where((item) => !item.time.isBefore(startPoint.time) && !item.time.isAfter(endPoint.time)).toList();
   final segmentAmount = segmentPoints.fold<double>(0, (sum, item) => sum + item.amount);
-  final completedMinutes = max(1, tradingMinute(end.time));
+  final completedMinutes = max(1, tradingMinute(endPoint.time));
   final completedAmount = today
       .where((item) => tradingMinute(item.time) <= completedMinutes)
       .fold<double>(0, (sum, item) => sum + item.amount);
@@ -7407,10 +7364,10 @@ TailChange? tailChangeBetween(List<TrendPoint> points, int startHour, int startM
   final averageBucketAmount = completedAmount <= 0 ? 0 : completedAmount / completedBuckets;
   final volumeRatio = averageBucketAmount <= 0 ? 1.0 : (segmentAmount / averageBucketAmount).clamp(0.0, 6.0).toDouble();
   return TailChange(
-    changePct: (end.close / start.close - 1) * 100,
+    changePct: (endPoint.close / startPoint.close - 1) * 100,
     volumeRatio: volumeRatio,
-    startTime: start.time,
-    endTime: end.time,
+    startTime: startPoint.time,
+    endTime: endPoint.time,
   );
 }
 
