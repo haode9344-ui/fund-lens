@@ -1901,7 +1901,10 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   else ...[
                     HoldingContributionSummary(holdings: _analysis.holdings),
                     const SizedBox(height: 6),
-                    ..._analysis.holdings.map((item) => StockHoldingRow(item: item)),
+                    ..._analysis.holdings.map((item) => StockHoldingRow(
+                          item: item,
+                          tailSignal: tailSignalForHolding(_analysis.tailSignals, item.code),
+                        )),
                   ],
                   if (_analysis.announcements.isNotEmpty) ...[
                     const Divider(height: 28),
@@ -2573,6 +2576,8 @@ class _DecisionModelCardState extends State<DecisionModelCard> {
           const SizedBox(height: 10),
           Text(decision.summary, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, height: 1.35)),
           const SizedBox(height: 12),
+          TailWeightedVoteCard(decision: decision),
+          const SizedBox(height: 12),
           _DecisionRow(label: '板块资金', value: compactDecisionText('板块资金', decision.valuationState, decision.valuationTone), tone: decision.valuationTone),
           _DecisionRow(label: '尾盘动向', value: compactDecisionText('尾盘动向', decision.trendState, decision.trendTone), tone: decision.trendTone),
           _DecisionRow(label: '后面几天', value: compactDecisionText('后面几天', decision.durationState, decision.durationTone), tone: decision.durationTone),
@@ -2592,6 +2597,157 @@ class _DecisionModelCardState extends State<DecisionModelCard> {
               icon: Icon(_expanded ? CupertinoIcons.chevron_up : CupertinoIcons.chevron_down, size: 15),
               label: Text(_expanded ? '收起详细依据' : '展开看详细依据'),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class TailWeightedVoteCard extends StatelessWidget {
+  const TailWeightedVoteCard({super.key, required this.decision});
+
+  final DecisionModel decision;
+
+  @override
+  Widget build(BuildContext context) {
+    final threshold = decision.tailVoteThresholdPct <= 0 ? 15.0 : decision.tailVoteThresholdPct;
+    final rawDirection = decision.tailVotePct > threshold
+        ? '偏多'
+        : decision.tailVotePct < -threshold
+            ? '偏空'
+            : '不判断';
+    final direction = decision.tailEtfFiltered ? '不判断' : rawDirection;
+    final color = direction == '偏多'
+        ? AppColors.red
+        : direction == '偏空'
+            ? AppColors.green
+            : AppColors.muted;
+    final hasData = decision.tailReadyCount > 0 || decision.tailTotalCount > 0;
+    final voteText = decision.tailVotePct >= 0 ? '+${decision.tailVotePct.toStringAsFixed(1)}%' : '${decision.tailVotePct.toStringAsFixed(1)}%';
+    final clamped = ((decision.tailVotePct + 30) / 60).clamp(0.0, 1.0).toDouble();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.bg,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text('持仓尾盘投票', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900)),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: color.withOpacity(0.28)),
+                ),
+                child: Text(direction, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w900)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final thumbLeft = (constraints.maxWidth * clamped - 7).clamp(0.0, max(0.0, constraints.maxWidth - 14)).toDouble();
+              return SizedBox(
+                height: 18,
+                child: Stack(
+                  alignment: Alignment.centerLeft,
+                  children: [
+                    Container(
+                      height: 8,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(999),
+                        gradient: LinearGradient(
+                          colors: [
+                            AppColors.green.withOpacity(0.85),
+                            AppColors.line,
+                            AppColors.red.withOpacity(0.85),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: thumbLeft,
+                      child: Container(
+                        width: 14,
+                        height: 14,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppColors.ink, width: 1.5),
+                          boxShadow: const [BoxShadow(color: Color(0x22000000), blurRadius: 5, offset: Offset(0, 2))],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _TailVoteMetric(label: '加权总分', value: voteText, color: color)),
+              const SizedBox(width: 8),
+              Expanded(child: _TailVoteMetric(label: '放量仓位', value: '${decision.tailSpikeWeightPct.toStringAsFixed(1)}%')),
+              const SizedBox(width: 8),
+              Expanded(child: _TailVoteMetric(label: '阈值', value: '±${threshold.toStringAsFixed(0)}%')),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            hasData
+                ? '已读取 ${decision.tailReadyCount}/${decision.tailTotalCount} 只公开持仓股票，合计占披露仓位 ${decision.tailReadyWeightPct.toStringAsFixed(1)}%。量比≥1.5 才投票；上涨记 +持仓占比，下跌记 -持仓占比，缩量记 0。'
+                : '等待 14:50-15:00 的真实持仓股票分钟行情；没拿到真实数据时不做尾盘投票。',
+            style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w700),
+          ),
+          if (decision.tailEtfFiltered && decision.tailEtfFilterText.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              decision.tailEtfFilterText,
+              style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _TailVoteMetric extends StatelessWidget {
+  const _TailVoteMetric({required this.label, required this.value, this.color});
+
+  final String label;
+  final String value;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 11, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(value, style: TextStyle(color: color ?? AppColors.ink, fontSize: 15, fontWeight: FontWeight.w900)),
           ),
         ],
       ),
@@ -3359,14 +3515,18 @@ class AnnouncementTile extends StatelessWidget {
 }
 
 class StockHoldingRow extends StatelessWidget {
-  const StockHoldingRow({super.key, required this.item});
+  const StockHoldingRow({super.key, required this.item, this.tailSignal});
 
   final StockHolding item;
+  final StockTailSignal? tailSignal;
 
   @override
   Widget build(BuildContext context) {
     final quote = item.changePct == null ? '暂无行情' : pct(item.changePct!);
     final flow = item.mainFlow == null ? '资金等待' : flowDirectionText(item.mainFlow, item.mainFlowPct);
+    final tail = holdingTailContributionText(item, tailSignal);
+    final tailColor = holdingTailContributionColor(tailSignal);
+    final tailIcon = holdingTailContributionIcon(tailSignal);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -3380,14 +3540,72 @@ class StockHoldingRow extends StatelessWidget {
                 Text('${item.code} · ${item.industry}', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
                 const SizedBox(height: 3),
                 Text(flow, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w700)),
+                if (tailSignal != null) ...[
+                  const SizedBox(height: 5),
+                  Text(
+                    '尾盘：${tailSignal!.ready ? '最后10分钟 ${pct(tailSignal!.changePct ?? 0)} · 量比 ${(tailSignal!.volumeRatio ?? 0).toStringAsFixed(1)}' : '等待真实分钟行情'}',
+                    style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                ],
               ],
             ),
           ),
-          Text('占 ${item.holdingPct.toStringAsFixed(2)}% · $quote', style: const TextStyle(fontWeight: FontWeight.w800)),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text('占 ${item.holdingPct.toStringAsFixed(2)}% · $quote', style: const TextStyle(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                  color: tailColor.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: tailColor.withOpacity(0.28)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(tailIcon, color: tailColor, size: 12),
+                    const SizedBox(width: 4),
+                    Text(tail, style: TextStyle(color: tailColor, fontSize: 12, fontWeight: FontWeight.w900)),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
   }
+}
+
+StockTailSignal? tailSignalForHolding(List<StockTailSignal> signals, String code) {
+  for (final signal in signals) {
+    if (signal.code == code) return signal;
+  }
+  return null;
+}
+
+bool isEffectiveTailSignal(StockTailSignal? signal) {
+  if (signal == null || !signal.ready || signal.changePct == null || signal.volumeRatio == null) return false;
+  return signal.volumeRatio! >= 1.5 && signal.changePct!.abs() > 0.01;
+}
+
+String holdingTailContributionText(StockHolding item, StockTailSignal? signal) {
+  if (signal == null || !signal.ready) return '未读取';
+  if (!isEffectiveTailSignal(signal)) return '0分';
+  final value = signal.changePct! > 0 ? item.holdingPct : -item.holdingPct;
+  return '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2)}%';
+}
+
+Color holdingTailContributionColor(StockTailSignal? signal) {
+  if (!isEffectiveTailSignal(signal)) return AppColors.muted;
+  return signal!.changePct! > 0 ? AppColors.red : AppColors.green;
+}
+
+IconData holdingTailContributionIcon(StockTailSignal? signal) {
+  if (!isEffectiveTailSignal(signal)) return CupertinoIcons.minus;
+  return signal!.changePct! > 0 ? CupertinoIcons.arrow_up : CupertinoIcons.arrow_down;
 }
 
 class Pill extends StatelessWidget {
@@ -3892,7 +4110,7 @@ class FundService {
   Future<List<StockHolding>> _loadHoldings(String code) async {
     final year = DateTime.now().year;
     for (final targetYear in [year, year - 1]) {
-      for (final line in const [100, 50, 10]) {
+      for (final line in const [300, 100, 50, 10]) {
         final uri = Uri.parse(
           'https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=$code&topline=$line&year=$targetYear&month=&rt=${DateTime.now().millisecondsSinceEpoch}',
         );
@@ -4942,6 +5160,17 @@ class FundService {
         volumeText: forward.volumeText,
         conclusion: '明天有低开低走风险',
         confidence: forward.confidence,
+        tailReadyCount: forward.tailReadyCount,
+        tailTotalCount: forward.tailTotalCount,
+        tailReadyWeightPct: forward.tailReadyWeightPct,
+        tailSpikeCount: forward.tailSpikeCount,
+        tailSpikeWeightPct: forward.tailSpikeWeightPct,
+        tailUpWeightPct: forward.tailUpWeightPct,
+        tailDownWeightPct: forward.tailDownWeightPct,
+        tailVotePct: forward.tailVotePct,
+        tailVoteThresholdPct: forward.tailVoteThresholdPct,
+        tailEtfFiltered: forward.tailEtfFiltered,
+        tailEtfFilterText: forward.tailEtfFilterText,
       );
     }
 
@@ -5398,6 +5627,17 @@ class FundService {
       gridTrigger: amountRule,
       summary: decisionSummary,
       reason: '',
+      tailReadyCount: forward.tailReadyCount,
+      tailTotalCount: forward.tailTotalCount,
+      tailReadyWeightPct: forward.tailReadyWeightPct,
+      tailSpikeCount: forward.tailSpikeCount,
+      tailSpikeWeightPct: forward.tailSpikeWeightPct,
+      tailUpWeightPct: forward.tailUpWeightPct,
+      tailDownWeightPct: forward.tailDownWeightPct,
+      tailVotePct: forward.tailVotePct,
+      tailVoteThresholdPct: forward.tailVoteThresholdPct,
+      tailEtfFiltered: forward.tailEtfFiltered,
+      tailEtfFilterText: forward.tailEtfFilterText,
     );
 
     final todayReason =
@@ -5524,6 +5764,7 @@ class FundService {
       intradayNote: intraday.note,
       decision: decision,
       holdings: holdings,
+      tailSignals: tailSignals,
       announcements: announcements,
       liquorSpecial: isLiquor
           ? '价格位置：$valuationBackground；龙头业绩：${majorNegative == null ? '关注茅台、五粮液、泸州老窖经营数据' : '五粮液管理层公告偏负面'}；消费情绪：${last20 > 0 ? '中性修复' : '偏弱'}；节假日效应：${holidayEffect()}；机构拥挤度：${std(returns.takeLast(30)) > 1.4 ? '中高' : '中'}。'
@@ -6512,6 +6753,17 @@ class ForwardDecisionScore {
     required this.volumeText,
     required this.conclusion,
     required this.confidence,
+    required this.tailReadyCount,
+    required this.tailTotalCount,
+    required this.tailReadyWeightPct,
+    required this.tailSpikeCount,
+    required this.tailSpikeWeightPct,
+    required this.tailUpWeightPct,
+    required this.tailDownWeightPct,
+    required this.tailVotePct,
+    required this.tailVoteThresholdPct,
+    required this.tailEtfFiltered,
+    required this.tailEtfFilterText,
   });
 
   final int total;
@@ -6523,6 +6775,17 @@ class ForwardDecisionScore {
   final String volumeText;
   final String conclusion;
   final String confidence;
+  final int tailReadyCount;
+  final int tailTotalCount;
+  final double tailReadyWeightPct;
+  final int tailSpikeCount;
+  final double tailSpikeWeightPct;
+  final double tailUpWeightPct;
+  final double tailDownWeightPct;
+  final double tailVotePct;
+  final double tailVoteThresholdPct;
+  final bool tailEtfFiltered;
+  final String tailEtfFilterText;
 }
 
 class DecisionModel {
@@ -6551,6 +6814,17 @@ class DecisionModel {
     required this.gridTrigger,
     required this.summary,
     required this.reason,
+    required this.tailReadyCount,
+    required this.tailTotalCount,
+    required this.tailReadyWeightPct,
+    required this.tailSpikeCount,
+    required this.tailSpikeWeightPct,
+    required this.tailUpWeightPct,
+    required this.tailDownWeightPct,
+    required this.tailVotePct,
+    required this.tailVoteThresholdPct,
+    required this.tailEtfFiltered,
+    required this.tailEtfFilterText,
   });
 
   final String confidence;
@@ -6577,6 +6851,17 @@ class DecisionModel {
   final String gridTrigger;
   final String summary;
   final String reason;
+  final int tailReadyCount;
+  final int tailTotalCount;
+  final double tailReadyWeightPct;
+  final int tailSpikeCount;
+  final double tailSpikeWeightPct;
+  final double tailUpWeightPct;
+  final double tailDownWeightPct;
+  final double tailVotePct;
+  final double tailVoteThresholdPct;
+  final bool tailEtfFiltered;
+  final String tailEtfFilterText;
 
   Map<String, dynamic> toJson() => {
         'confidence': confidence,
@@ -6603,6 +6888,17 @@ class DecisionModel {
         'gridTrigger': gridTrigger,
         'summary': summary,
         'reason': reason,
+        'tailReadyCount': tailReadyCount,
+        'tailTotalCount': tailTotalCount,
+        'tailReadyWeightPct': tailReadyWeightPct,
+        'tailSpikeCount': tailSpikeCount,
+        'tailSpikeWeightPct': tailSpikeWeightPct,
+        'tailUpWeightPct': tailUpWeightPct,
+        'tailDownWeightPct': tailDownWeightPct,
+        'tailVotePct': tailVotePct,
+        'tailVoteThresholdPct': tailVoteThresholdPct,
+        'tailEtfFiltered': tailEtfFiltered,
+        'tailEtfFilterText': tailEtfFilterText,
       };
 
   factory DecisionModel.fromJson(Map<String, dynamic> json) => DecisionModel(
@@ -6630,6 +6926,17 @@ class DecisionModel {
         gridTrigger: (json['gridTrigger'] ?? '').toString(),
         summary: (json['summary'] ?? '').toString(),
         reason: (json['reason'] ?? '').toString(),
+        tailReadyCount: toInt(json['tailReadyCount']),
+        tailTotalCount: toInt(json['tailTotalCount']),
+        tailReadyWeightPct: toDouble(json['tailReadyWeightPct']),
+        tailSpikeCount: toInt(json['tailSpikeCount']),
+        tailSpikeWeightPct: toDouble(json['tailSpikeWeightPct']),
+        tailUpWeightPct: toDouble(json['tailUpWeightPct']),
+        tailDownWeightPct: toDouble(json['tailDownWeightPct']),
+        tailVotePct: toDouble(json['tailVotePct']),
+        tailVoteThresholdPct: toNullableDouble(json['tailVoteThresholdPct']) ?? 15,
+        tailEtfFiltered: json['tailEtfFiltered'] == true,
+        tailEtfFilterText: (json['tailEtfFilterText'] ?? '').toString(),
       );
 
   DecisionModel copyWith({
@@ -6657,6 +6964,17 @@ class DecisionModel {
     String? gridTrigger,
     String? summary,
     String? reason,
+    int? tailReadyCount,
+    int? tailTotalCount,
+    double? tailReadyWeightPct,
+    int? tailSpikeCount,
+    double? tailSpikeWeightPct,
+    double? tailUpWeightPct,
+    double? tailDownWeightPct,
+    double? tailVotePct,
+    double? tailVoteThresholdPct,
+    bool? tailEtfFiltered,
+    String? tailEtfFilterText,
   }) {
     return DecisionModel(
       confidence: confidence ?? this.confidence,
@@ -6683,6 +7001,17 @@ class DecisionModel {
       gridTrigger: gridTrigger ?? this.gridTrigger,
       summary: summary ?? this.summary,
       reason: reason ?? this.reason,
+      tailReadyCount: tailReadyCount ?? this.tailReadyCount,
+      tailTotalCount: tailTotalCount ?? this.tailTotalCount,
+      tailReadyWeightPct: tailReadyWeightPct ?? this.tailReadyWeightPct,
+      tailSpikeCount: tailSpikeCount ?? this.tailSpikeCount,
+      tailSpikeWeightPct: tailSpikeWeightPct ?? this.tailSpikeWeightPct,
+      tailUpWeightPct: tailUpWeightPct ?? this.tailUpWeightPct,
+      tailDownWeightPct: tailDownWeightPct ?? this.tailDownWeightPct,
+      tailVotePct: tailVotePct ?? this.tailVotePct,
+      tailVoteThresholdPct: tailVoteThresholdPct ?? this.tailVoteThresholdPct,
+      tailEtfFiltered: tailEtfFiltered ?? this.tailEtfFiltered,
+      tailEtfFilterText: tailEtfFilterText ?? this.tailEtfFilterText,
     );
   }
 }
@@ -6722,6 +7051,7 @@ class FundAnalysis {
     required this.intradayNote,
     required this.decision,
     required this.holdings,
+    required this.tailSignals,
     required this.announcements,
     required this.liquorSpecial,
     required this.battlePlan,
@@ -6770,6 +7100,7 @@ class FundAnalysis {
   final String intradayNote;
   final DecisionModel decision;
   final List<StockHolding> holdings;
+  final List<StockTailSignal> tailSignals;
   final List<Announcement> announcements;
   final String? liquorSpecial;
   final GridBattlePlan battlePlan;
@@ -6855,6 +7186,7 @@ class FundAnalysis {
       intradayNote: intradayNote,
       decision: decision ?? this.decision,
       holdings: holdings,
+      tailSignals: tailSignals,
       announcements: announcements,
       liquorSpecial: liquorSpecial,
       battlePlan: battlePlan ?? this.battlePlan,
@@ -8215,6 +8547,17 @@ ForwardDecisionScore buildForwardDecisionScore({
     volumeText: volumeLabel,
     conclusion: conclusion,
     confidence: confidence,
+    tailReadyCount: readyTails.length,
+    tailTotalCount: tailSignals.length,
+    tailReadyWeightPct: readyWeightTotal,
+    tailSpikeCount: spikeTails.length,
+    tailSpikeWeightPct: spikeWeightTotal,
+    tailUpWeightPct: upTailWeight,
+    tailDownWeightPct: downTailWeight,
+    tailVotePct: weightedTailVote,
+    tailVoteThresholdPct: weightedTailTriggerPct,
+    tailEtfFiltered: etfTailFilterText.isNotEmpty,
+    tailEtfFilterText: etfTailFilterText,
   );
 }
 
