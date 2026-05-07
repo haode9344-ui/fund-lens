@@ -4307,6 +4307,8 @@ class FundService {
         holdingPct: holding.holdingPct,
         ready: true,
         changePct: tail.changePct,
+        volumeRatio: tail.volumeRatio,
+        momentumScore: tail.changePct * tail.volumeRatio * holding.holdingPct / 100,
         startTime: tail.startTime,
         endTime: tail.endTime,
       );
@@ -5771,6 +5773,8 @@ class StockTailSignal {
     required this.holdingPct,
     required this.ready,
     this.changePct,
+    this.volumeRatio,
+    this.momentumScore,
     this.startTime,
     this.endTime,
   });
@@ -5780,14 +5784,22 @@ class StockTailSignal {
   final double holdingPct;
   final bool ready;
   final double? changePct;
+  final double? volumeRatio;
+  final double? momentumScore;
   final DateTime? startTime;
   final DateTime? endTime;
 }
 
 class TailChange {
-  TailChange({required this.changePct, required this.startTime, required this.endTime});
+  TailChange({
+    required this.changePct,
+    required this.volumeRatio,
+    required this.startTime,
+    required this.endTime,
+  });
 
   final double changePct;
+  final double volumeRatio;
   final DateTime startTime;
   final DateTime endTime;
 }
@@ -7385,7 +7397,21 @@ TailChange? tailChangeBetween(List<TrendPoint> points, int startHour, int startM
   end ??= today.last;
   start ??= today.first;
   if (end.time.isBefore(start.time) || start.close <= 0) return null;
-  return TailChange(changePct: (end.close / start.close - 1) * 100, startTime: start.time, endTime: end.time);
+  final segmentPoints = today.where((item) => !item.time.isBefore(start.time) && !item.time.isAfter(end.time)).toList();
+  final segmentAmount = segmentPoints.fold<double>(0, (sum, item) => sum + item.amount);
+  final completedMinutes = max(1, tradingMinute(end.time));
+  final completedAmount = today
+      .where((item) => tradingMinute(item.time) <= completedMinutes)
+      .fold<double>(0, (sum, item) => sum + item.amount);
+  final completedBuckets = max(1.0, completedMinutes / 25);
+  final averageBucketAmount = completedAmount <= 0 ? 0 : completedAmount / completedBuckets;
+  final volumeRatio = averageBucketAmount <= 0 ? 1.0 : (segmentAmount / averageBucketAmount).clamp(0.0, 6.0).toDouble();
+  return TailChange(
+    changePct: (end.close / start.close - 1) * 100,
+    volumeRatio: volumeRatio,
+    startTime: start.time,
+    endTime: end.time,
+  );
 }
 
 double? sameMinuteAmountRatio(List<TrendPoint> points) {
@@ -7840,23 +7866,37 @@ ForwardDecisionScore buildForwardDecisionScore({
               ? joinSentences(['$boardSourceHint主力净流入 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，资金仍在买入。', breadthText])
               : joinSentences(['$boardSourceHint主力净流出 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，抛压偏重。', breadthText]);
 
-  final readyTails = tailSignals.where((item) => item.ready && item.changePct != null).toList();
+  final readyTails = tailSignals.where((item) => item.ready && item.changePct != null && item.momentumScore != null).toList();
   final tailWeightTotal = readyTails.fold<double>(0, (sum, item) => sum + item.holdingPct);
   final weightedTailChange = tailWeightTotal <= 0
       ? null
       : readyTails.fold<double>(0, (sum, item) => sum + item.changePct! * item.holdingPct) / tailWeightTotal;
-  final upTailWeight = readyTails.where((item) => item.changePct! >= 0.8).fold<double>(0, (sum, item) => sum + item.holdingPct);
-  final downTailWeight = readyTails.where((item) => item.changePct! <= -0.8).fold<double>(0, (sum, item) => sum + item.holdingPct);
+  final totalMomentum = readyTails.fold<double>(0, (sum, item) => sum + item.momentumScore!);
+  final upTailWeight = readyTails
+      .where((item) => item.changePct! >= 0.25 && (item.volumeRatio ?? 0) >= 1.05)
+      .fold<double>(0, (sum, item) => sum + item.holdingPct);
+  final downTailWeight = readyTails
+      .where((item) => item.changePct! <= -0.25 && (item.volumeRatio ?? 0) >= 1.05)
+      .fold<double>(0, (sum, item) => sum + item.holdingPct);
+  final top3TailSignals = [...readyTails]..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
+  final strongTailBuyCount = top3TailSignals
+      .take(3)
+      .where((item) => item.changePct! >= 0.35 && (item.volumeRatio ?? 0) >= 1.10)
+      .length;
+  final strongTailSellCount = top3TailSignals
+      .take(3)
+      .where((item) => item.changePct! <= -0.35 && (item.volumeRatio ?? 0) >= 1.10)
+      .length;
   final boardTailLift = board?.tail20ChangePct;
   var tailScore = 0;
   if (weightedTailChange != null) {
-    if (weightedTailChange >= 0.85 || upTailWeight >= max(10.0, tailWeightTotal * 0.45)) {
+    if (totalMomentum >= 0.12 || (strongTailBuyCount >= 2 && upTailWeight >= max(8.0, tailWeightTotal * 0.36))) {
       tailScore = 2;
-    } else if (weightedTailChange >= 0.25 || upTailWeight >= max(6.0, tailWeightTotal * 0.30)) {
+    } else if (totalMomentum >= 0.04 || weightedTailChange >= 0.18 || upTailWeight >= max(6.0, tailWeightTotal * 0.28)) {
       tailScore = 1;
-    } else if (weightedTailChange <= -0.85 || downTailWeight >= max(10.0, tailWeightTotal * 0.45)) {
+    } else if (totalMomentum <= -0.12 || (strongTailSellCount >= 2 && downTailWeight >= max(8.0, tailWeightTotal * 0.36))) {
       tailScore = -2;
-    } else if (weightedTailChange <= -0.25 || downTailWeight >= max(6.0, tailWeightTotal * 0.30)) {
+    } else if (totalMomentum <= -0.04 || weightedTailChange <= -0.18 || downTailWeight >= max(6.0, tailWeightTotal * 0.28)) {
       tailScore = -1;
     }
   }
@@ -7865,24 +7905,30 @@ ForwardDecisionScore buildForwardDecisionScore({
   final positiveTailLeaders = readyTails
     .where((item) => item.changePct! > 0)
     .toList()
-    ..sort((a, b) => (b.changePct! * b.holdingPct).compareTo(a.changePct! * a.holdingPct));
+    ..sort((a, b) => (b.momentumScore ?? 0).compareTo(a.momentumScore ?? 0));
   final negativeTailLeaders = readyTails
     .where((item) => item.changePct! < 0)
     .toList()
-    ..sort((a, b) => (a.changePct! * a.holdingPct).compareTo(b.changePct! * b.holdingPct));
-  final positiveTailNames = positiveTailLeaders.take(2).map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%').join('、');
-  final negativeTailNames = negativeTailLeaders.take(2).map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%').join('、');
+    ..sort((a, b) => (a.momentumScore ?? 0).compareTo(b.momentumScore ?? 0));
+  final positiveTailNames = positiveTailLeaders
+      .take(2)
+      .map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%，尾盘${pct(item.changePct!)}，量比${(item.volumeRatio ?? 1).toStringAsFixed(1)}')
+      .join('、');
+  final negativeTailNames = negativeTailLeaders
+      .take(2)
+      .map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%，尾盘${pct(item.changePct!)}，量比${(item.volumeRatio ?? 1).toStringAsFixed(1)}')
+      .join('、');
   final stockTailText = readyTails.isEmpty
       ? '核心重仓股尾盘还没有拿到足够的分时确认。'
       : tailScore >= 2
-          ? '按披露权重加权后，$positiveTailNames 尾盘更强，重仓股出现了合力抢筹。'
+          ? '按披露权重和尾盘量能加权后，$positiveTailNames 动量最强，重仓股出现了合力抢筹。'
           : tailScore <= -2
-              ? '按披露权重加权后，$negativeTailNames 尾盘更弱，重仓股卖压没有明显松开。'
+              ? '按披露权重和尾盘量能加权后，$negativeTailNames 动量最弱，重仓股卖压没有明显松开。'
               : tailScore == 1
-                  ? '按披露权重看，重仓股尾盘略偏强，但合力还不算特别整齐。'
+                  ? '按披露权重和尾盘量能看，重仓股尾盘略偏强，但合力还不算特别整齐。'
                   : tailScore == -1
-                      ? '按披露权重看，重仓股尾盘略偏弱，回落压力还在。'
-                      : '按披露权重看，核心重仓股尾盘走势分化，未见合力抢筹。';
+                      ? '按披露权重和尾盘量能看，重仓股尾盘略偏弱，回落压力还在。'
+                      : '按披露权重和尾盘量能看，核心重仓股尾盘走势分化，未见合力抢筹。';
   final boardTailText = boardTailLift == null
       ? ''
       : boardTailLift >= 0.45
@@ -7893,6 +7939,7 @@ ForwardDecisionScore buildForwardDecisionScore({
   final tailText = joinSentences([
     stockTailText,
     if (weightedTailChange != null) '重仓尾盘加权变化 ${pct(weightedTailChange)}。',
+    if (readyTails.isNotEmpty) '尾盘合成动量 ${totalMomentum >= 0 ? '+' : ''}${totalMomentum.toStringAsFixed(3)}。',
     boardTailText,
   ]);
 
