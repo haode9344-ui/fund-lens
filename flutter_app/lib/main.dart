@@ -4925,7 +4925,12 @@ class FundService {
       market: market,
     );
 
-    var forward = buildForwardDecisionScore(board: market.board, tailSignals: tailSignals, todayPct: todayPct);
+    var forward = buildForwardDecisionScore(
+      board: market.board,
+      tailSignals: tailSignals,
+      todayPct: todayPct,
+      etfPricing: market.etfPricing,
+    );
     if (majorNegative != null) {
       forward = ForwardDecisionScore(
         total: min(forward.total - 2, -3).toInt(),
@@ -8059,6 +8064,7 @@ ForwardDecisionScore buildForwardDecisionScore({
   required BoardSignal? board,
   required List<StockTailSignal> tailSignals,
   required double todayPct,
+  required EtfPricingSignal? etfPricing,
 }) {
   final flow = board?.mainFlow;
   var fundFlowScore = 0;
@@ -8088,23 +8094,9 @@ ForwardDecisionScore buildForwardDecisionScore({
               : joinSentences(['$boardSourceHint主力净流出 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，抛压偏重。', breadthText]);
 
   const tailVolumeSpikeThreshold = 1.50;
+  const weightedTailTriggerPct = 15.0;
   final readyTails = tailSignals.where((item) => item.ready && item.changePct != null && item.volumeRatio != null).toList();
   final spikeTails = readyTails.where((item) => (item.volumeRatio ?? 0) >= tailVolumeSpikeThreshold).toList();
-  final momentumInputs = <MomentumInput>[];
-  for (var i = 0; i < readyTails.length; i += 1) {
-    final item = readyTails[i];
-    momentumInputs.add(
-      MomentumInput(
-        code: item.code,
-        name: item.name,
-        rank: i + 1,
-        weightPct: item.holdingPct,
-        priceSlopePct: item.changePct!,
-        volumeSpikeRatio: item.volumeRatio ?? 0,
-      ),
-    );
-  }
-  final momentumSignal = const MomentumEngine().decide(momentumInputs);
   final readyWeightTotal = readyTails.fold<double>(0, (sum, item) => sum + item.holdingPct);
   final spikeWeightTotal = spikeTails.fold<double>(0, (sum, item) => sum + item.holdingPct);
   final weightedTailChange = spikeWeightTotal <= 0
@@ -8116,26 +8108,25 @@ ForwardDecisionScore buildForwardDecisionScore({
   final downTailWeight = spikeTails
       .where((item) => item.changePct! < 0)
       .fold<double>(0, (sum, item) => sum + item.holdingPct);
-  final top3TailSignals = [...readyTails]..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
-  final strongTailBuyCount = top3TailSignals
-      .take(3)
-      .where((item) => item.changePct! > 0 && (item.volumeRatio ?? 0) >= tailVolumeSpikeThreshold)
-      .length;
-  final strongTailSellCount = top3TailSignals
-      .take(3)
-      .where((item) => item.changePct! < 0 && (item.volumeRatio ?? 0) >= tailVolumeSpikeThreshold)
-      .length;
+  final weightedTailVote = upTailWeight - downTailWeight;
+  final etfPremiumRatio = etfPricing?.premiumDiscountRatio;
+  final etfPremiumHigh = etfPremiumRatio != null && etfPremiumRatio >= 1;
+  final etfDiscountDeep = etfPremiumRatio != null && etfPremiumRatio <= -1;
   var tailScore = 0;
-  if (spikeWeightTotal > 0 && weightedTailChange != null) {
-    if (momentumSignal.signalType == 'BUY' || (strongTailBuyCount >= 2 && upTailWeight > downTailWeight)) {
+  var etfTailFilterText = '';
+  if (spikeWeightTotal > 0) {
+    if (weightedTailVote > weightedTailTriggerPct) {
       tailScore = 2;
-    } else if (upTailWeight > downTailWeight && weightedTailChange > 0) {
-      tailScore = 1;
-    } else if (momentumSignal.signalType == 'SELL' || (strongTailSellCount >= 2 && downTailWeight > upTailWeight)) {
+    } else if (weightedTailVote < -weightedTailTriggerPct) {
       tailScore = -2;
-    } else if (downTailWeight > upTailWeight && weightedTailChange < 0) {
-      tailScore = -1;
     }
+  }
+  if (tailScore > 0 && etfPremiumHigh) {
+    tailScore = 0;
+    etfTailFilterText = '但目标 ETF 当前溢价 ${pct(etfPremiumRatio!)}，偏多信号降级为不判断，避免追高接套利盘。';
+  } else if (tailScore < 0 && etfDiscountDeep) {
+    tailScore = 0;
+    etfTailFilterText = '但目标 ETF 当前折价 ${pct(etfPremiumRatio!)}，偏空信号降级为不判断，避免在折价修复前误卖。';
   }
   final positiveTailLeaders = spikeTails
     .where((item) => item.changePct! > 0)
@@ -8157,20 +8148,18 @@ ForwardDecisionScore buildForwardDecisionScore({
       ? '还没拿到 14:50-15:00 的真实重仓股分钟数据，尾盘信号暂不判断。'
       : spikeTails.isEmpty
           ? '最后 10 分钟没有放量，成交额未比前 10 分钟放大 50% 以上，尾盘信号无效。'
-          : tailScore >= 2
-              ? '最后 10 分钟放量上涨：$positiveTailNames，按持仓占比看，次日偏多信号成立。'
-              : tailScore <= -2
-                  ? '最后 10 分钟放量下跌：$negativeTailNames，按持仓占比看，次日偏空信号成立。'
-                  : tailScore == 1
-                      ? '最后 10 分钟有放量上涨，但主要集中在部分持仓，偏多信号不够强。'
-                      : tailScore == -1
-                          ? '最后 10 分钟有放量下跌，但主要集中在部分持仓，偏空信号需要结合 ETF 折溢价确认。'
-                          : '最后 10 分钟虽有放量，但重仓股涨跌方向分散，尾盘不站队。';
+          : etfTailFilterText.isNotEmpty
+              ? etfTailFilterText
+              : tailScore >= 2
+                  ? '最后 10 分钟放量上涨：$positiveTailNames，加权投票超过 +15%，次日偏多信号成立。'
+                  : tailScore <= -2
+                      ? '最后 10 分钟放量下跌：$negativeTailNames，加权投票跌破 -15%，次日偏空信号成立。'
+                      : '最后 10 分钟虽有放量，但加权投票落在 -15% 到 +15% 之间，尾盘不站队。';
   final coverageText = readyTails.isEmpty
       ? ''
       : spikeTails.isEmpty
           ? '14:50-15:00 已读取 ${readyTails.length}/${tailSignals.length} 只公开持仓股票，合计占披露仓位 ${readyWeightTotal.toStringAsFixed(1)}%，但没有达到放量标准。'
-          : '14:50-15:00 放量样本 ${spikeTails.length}/${readyTails.length} 只，合计占披露仓位 ${spikeWeightTotal.toStringAsFixed(1)}%；放量标准是成交额比前 10 分钟放大 50% 以上。';
+          : '14:50-15:00 放量样本 ${spikeTails.length}/${readyTails.length} 只，放量有效仓位 ${spikeWeightTotal.toStringAsFixed(1)}%；加权投票 ${pct(weightedTailVote)}，判断阈值是 ±15%。';
   final tailText = joinSentences([
     coverageText,
     stockTailText,
