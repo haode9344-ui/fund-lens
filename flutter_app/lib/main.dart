@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'quant_engines.dart';
+
 void main() {
   runApp(const XiaoyouApp());
 }
@@ -41,6 +43,8 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
   final FundService _service = FundService();
   final Map<String, FundAnalysis> _cache = {};
   Timer? _autoRefreshTimer;
+  Timer? _tailRefreshTimer;
+  String _lastDecisionNoticeKey = '';
   List<PortfolioItem> _owned = [];
   List<PortfolioItem> _simulated = [];
   int _tab = 0;
@@ -59,18 +63,26 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) {
       if (shouldAutoRefreshData()) _refreshCurrent();
     });
+    _tailRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (shouldHighFrequencyTailRefresh()) {
+        _refreshCurrent(showDecisionNotice: true);
+      }
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _autoRefreshTimer?.cancel();
+    _tailRefreshTimer?.cancel();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refreshCurrent();
+    if (state == AppLifecycleState.resumed) {
+      _refreshCurrent(showDecisionNotice: shouldShowLocalDecisionNotice());
+    }
   }
 
   Future<void> _loadPortfolios() async {
@@ -97,6 +109,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
 
   Future<void> _refreshCurrent({
     bool clearFirst = false,
+    bool showDecisionNotice = false,
   }) async {
     final items = List<PortfolioItem>.from(_currentItems);
     if (items.isEmpty) return;
@@ -118,9 +131,32 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
         }
       }
       if (changedItems) await _saveCurrent();
+      if (showDecisionNotice && mounted) _maybeShowLocalDecisionNotice();
     } finally {
       _refreshing = false;
     }
+  }
+
+  void _maybeShowLocalDecisionNotice() {
+    if (!shouldShowLocalDecisionNotice()) return;
+    final loaded = <FundAnalysis>[];
+    for (final item in _currentItems) {
+      final analysis = _cache[item.code];
+      if (analysis != null) loaded.add(analysis);
+    }
+    if (loaded.isEmpty) return;
+    loaded.sort((a, b) => homeTaskScore(b).compareTo(homeTaskScore(a)));
+    final target = loaded.first;
+    if (target.buyRatio <= 0 && target.sellRatio <= 0) return;
+    final key = '${_tab}_${target.code}_${target.analysisDate}_${target.buyRatio}_${target.sellRatio}';
+    if (key == _lastDecisionNoticeKey) return;
+    _lastDecisionNoticeKey = key;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('14:55 本机提醒：${target.name}，${homeActionText(target)}。'),
+        duration: const Duration(seconds: 8),
+      ),
+    );
   }
 
   bool _replaceCurrentItem(PortfolioItem item) {
@@ -1604,17 +1640,58 @@ class FundDetailPage extends StatefulWidget {
 class _FundDetailPageState extends State<FundDetailPage> {
   late PortfolioItem _item = widget.item;
   late FundAnalysis _analysis = widget.analysis;
+  Timer? _tailRefreshTimer;
+  bool _detailRefreshing = false;
+  String _lastDetailDecisionNoticeKey = '';
 
-  Future<void> _refresh() async {
-    final fresh = await widget.onUpdateItem(_item);
-    if (mounted) {
-      setState(() {
-        _analysis = fresh;
-        _item = fresh.settledItem;
-      });
+  @override
+  void initState() {
+    super.initState();
+    _tailRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (shouldHighFrequencyTailRefresh()) {
+        _refreshInternal(showDecisionNotice: true);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _tailRefreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() => _refreshInternal();
+
+  Future<void> _refreshInternal({bool showDecisionNotice = false}) async {
+    if (_detailRefreshing) return;
+    _detailRefreshing = true;
+    try {
+      final fresh = await widget.onUpdateItem(_item);
+      if (mounted) {
+        setState(() {
+          _analysis = fresh;
+          _item = fresh.settledItem;
+        });
+        if (showDecisionNotice) _maybeShowDetailDecisionNotice();
+      }
+    } finally {
+      _detailRefreshing = false;
     }
   }
 
+  void _maybeShowDetailDecisionNotice() {
+    if (!shouldShowLocalDecisionNotice()) return;
+    if (_analysis.buyRatio <= 0 && _analysis.sellRatio <= 0) return;
+    final key = '${_analysis.code}_${_analysis.analysisDate}_${_analysis.buyRatio}_${_analysis.sellRatio}';
+    if (key == _lastDetailDecisionNoticeKey) return;
+    _lastDetailDecisionNoticeKey = key;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('14:55 本机提醒：${_analysis.name}，${homeActionText(_analysis)}。'),
+        duration: const Duration(seconds: 8),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1760,6 +1837,11 @@ class _FundDetailPageState extends State<FundDetailPage> {
                   else
                     const Text('今天先观望，等更清楚的盘面信号。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 12),
+                  const Text(
+                    '14:55 是最后判断窗口：15:00 前买入才参与明天涨跌，15:00 后买入顺延到后天。',
+                    style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(child: _Metric(label: '后面几天', value: _analysis.futureDaysText)),
@@ -1808,18 +1890,18 @@ class _FundDetailPageState extends State<FundDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('前十大重仓股', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                  const Text('公开持仓股票', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
                   if (_analysis.holdingSourceText.isNotEmpty) ...[
                     const SizedBox(height: 6),
                     Text(_analysis.holdingSourceText, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
                   ],
                   const SizedBox(height: 12),
                   if (_analysis.holdings.isEmpty)
-                    const Text('暂时还没拿到最新的前十大重仓股，下拉刷新后会再试一次。', style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700))
+                    const Text('暂时还没拿到最新公开持仓股票，下拉刷新后会再试一次。', style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700))
                   else ...[
                     HoldingContributionSummary(holdings: _analysis.holdings),
                     const SizedBox(height: 6),
-                    ..._analysis.holdings.take(10).map((item) => StockHoldingRow(item: item)),
+                    ..._analysis.holdings.map((item) => StockHoldingRow(item: item)),
                   ],
                   if (_analysis.announcements.isNotEmpty) ...[
                     const Divider(height: 28),
@@ -3399,7 +3481,7 @@ class FundService {
     final holdingCode = holdingsLookupCode(fund);
     final etfPricingFuture = _loadEtfPricingSignal(fund, holdingCode);
     final rawHoldings = await _loadHoldings(holdingCode);
-    final holdingSourceText = holdingCode == code ? '' : '该基金为联接基金，此处展示底层目标 ETF $holdingCode 最近披露的核心重仓股。';
+    final holdingSourceText = holdingCode == code ? '' : '该基金为联接基金，此处展示底层目标 ETF $holdingCode 最近披露的公开持仓股票。';
     final holdings = await _enrichHoldings(rawHoldings);
     final tailSignalsFuture = _loadStockTailSignals(holdings);
     final announcementsFuture = _loadAnnouncements(holdings.take(8).toList());
@@ -3420,6 +3502,7 @@ class FundService {
       overnight: overnight,
       marketBreadth: marketBreadth,
     );
+    final navCorrection = await _loadNavCorrection(code, fund, realtime, market);
     final draft = _analyze(
       fund,
       holdings,
@@ -3433,6 +3516,7 @@ class FundService {
       settledItem,
       holdingSourceText,
       totalCapital,
+      navCorrection: navCorrection,
     );
     final yesterdayReview = await _loadYesterdayReview(code, theme, draft.todayPct);
     final calibration = await _loadFactorCalibration(theme);
@@ -3449,6 +3533,7 @@ class FundService {
       settledItem,
       holdingSourceText,
       totalCapital,
+      navCorrection: navCorrection,
       yesterdayReview: yesterdayReview,
       calibration: calibration,
     );
@@ -3504,7 +3589,7 @@ class FundService {
 
     final reason = buildMonthlyRecommendationReason(candidate, analysis, buySuggested);
     final footnote = buySuggested
-        ? '${candidate.note} 只有当板块资金、尾盘承接和事件风险没有一起转坏时，才按当前建议执行。'
+        ? '${candidate.note} 只有当板块资金、最后10分钟放量方向和事件风险没有一起转坏时，才按当前建议执行。'
         : '${candidate.note} 它只是本月候选池里当前最稳的一只，不代表立刻就要重仓买进去。';
 
     return MonthlyRecommendation(
@@ -3560,6 +3645,98 @@ class FundService {
         estimatePct: toDouble(payload['gszzl']),
         updateTime: (payload['gztime'] ?? '').toString(),
       );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<NavCorrectionResult?> _loadNavCorrection(
+    String code,
+    FundBase fund,
+    RealtimeEstimate? realtime,
+    MarketSnapshot market,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final recordsKey = 'nav_error_records_$code';
+    final snapshotsKey = 'nav_estimate_snapshots_$code';
+    final records = <NavErrorRecord>[];
+    final snapshots = <Map<String, dynamic>>[];
+
+    final rawRecords = prefs.getString(recordsKey);
+    if (rawRecords != null && rawRecords.isNotEmpty) {
+      try {
+        final rows = (jsonDecode(rawRecords) as List<dynamic>).whereType<Map<String, dynamic>>();
+        records.addAll(rows.map(NavErrorRecord.fromJson).where((item) => item.actualNav > 0 && item.estimatedNav > 0));
+      } catch (_) {
+        records.clear();
+      }
+    }
+
+    final rawSnapshots = prefs.getString(snapshotsKey);
+    if (rawSnapshots != null && rawSnapshots.isNotEmpty) {
+      try {
+        snapshots.addAll((jsonDecode(rawSnapshots) as List<dynamic>).whereType<Map<String, dynamic>>());
+      } catch (_) {
+        snapshots.clear();
+      }
+    }
+
+    final officialByDate = {for (final point in fund.points) point.date: point};
+    final recordedDates = records.map((item) => item.tradeDate).toSet();
+    for (final snapshot in snapshots) {
+      final date = (snapshot['date'] ?? '').toString();
+      final estimatedNav = toNullableDouble(snapshot['estimatedNav']);
+      final official = officialByDate[date];
+      if (date.isEmpty || estimatedNav == null || estimatedNav <= 0 || official == null || official.value <= 0) {
+        continue;
+      }
+      if (recordedDates.contains(date)) continue;
+      final industryReturn = toNullableDouble(snapshot['industryReturn']);
+      records.add(
+        NavErrorRecord(
+          tradeDate: date,
+          actualNav: official.value,
+          estimatedNav: estimatedNav,
+          industryReturn: industryReturn,
+          factorReturns: {
+            if (industryReturn != null) 'industry_return': industryReturn,
+          },
+        ),
+      );
+      recordedDates.add(date);
+    }
+
+    records.sort((a, b) => b.tradeDate.compareTo(a.tradeDate));
+    await prefs.setString(recordsKey, jsonEncode(records.take(60).map((item) => item.toJson()).toList()));
+
+    if (realtime != null && realtime.estimatedNav > 0) {
+      final realtimeDate = parseDateFromText(realtime.updateTime);
+      final estimateDate = realtimeDate == null ? todayDateString() : dateText(realtimeDate);
+      final industryReturn = market.board == null ? null : market.board!.changePct / 100.0;
+      snapshots.removeWhere((row) => (row['date'] ?? '').toString() == estimateDate);
+      snapshots.add({
+        'date': estimateDate,
+        'estimatedNav': realtime.estimatedNav,
+        'industryReturn': industryReturn,
+        'savedAt': DateTime.now().toIso8601String(),
+      });
+      snapshots.sort((a, b) => (b['date'] ?? '').toString().compareTo((a['date'] ?? '').toString()));
+      await prefs.setString(snapshotsKey, jsonEncode(snapshots.take(60).toList()));
+    }
+
+    if (realtime == null || realtime.estimatedNav <= 0 || shouldUseOfficialNav(fund.points.last, realtime)) {
+      return null;
+    }
+    final usable = records.where((item) => item.actualNav > 0 && item.estimatedNav > 0).toList();
+    if (usable.isEmpty) return null;
+    try {
+      final result = ErrorCorrection(usable).bestAvailable(
+        realtime.estimatedNav,
+        currentIndustryReturn: market.board == null ? null : market.board!.changePct / 100.0,
+      );
+      if (result.correctedNav <= 0) return null;
+      if ((result.correction / realtime.estimatedNav).abs() > 0.06) return null;
+      return result;
     } catch (_) {
       return null;
     }
@@ -3715,16 +3892,18 @@ class FundService {
   Future<List<StockHolding>> _loadHoldings(String code) async {
     final year = DateTime.now().year;
     for (final targetYear in [year, year - 1]) {
-      final uri = Uri.parse(
-        'https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=$code&topline=10&year=$targetYear&month=&rt=${DateTime.now().millisecondsSinceEpoch}',
-      );
-      try {
-        final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://fundf10.eastmoney.com/'})).timeout(const Duration(seconds: 18));
-        if (response.statusCode != 200) continue;
-        final holdings = parseHoldingsHtml(utf8.decode(response.bodyBytes));
-        if (holdings.isNotEmpty) return holdings;
-      } catch (_) {
-        continue;
+      for (final line in const [100, 50, 10]) {
+        final uri = Uri.parse(
+          'https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=$code&topline=$line&year=$targetYear&month=&rt=${DateTime.now().millisecondsSinceEpoch}',
+        );
+        try {
+          final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://fundf10.eastmoney.com/'})).timeout(const Duration(seconds: 18));
+          if (response.statusCode != 200) continue;
+          final holdings = parseHoldingsHtml(utf8.decode(response.bodyBytes));
+          if (holdings.isNotEmpty) return holdings;
+        } catch (_) {
+          continue;
+        }
       }
     }
     return [];
@@ -3732,14 +3911,20 @@ class FundService {
 
   Future<List<StockHolding>> _enrichHoldings(List<StockHolding> holdings) async {
     if (holdings.isEmpty) return holdings;
-    final secids = holdings.map((item) => '${marketFromCode(item.code)}.${item.code}').join(',');
-    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=$secids&fields=f2,f3,f6,f8,f12,f14,f62,f66,f69,f72,f75,f100,f184&rt=${DateTime.now().millisecondsSinceEpoch}');
+    final quoteMap = <String, Map<String, dynamic>>{};
     try {
-      final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
-      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-      final data = payload['data'] as Map<String, dynamic>?;
-      final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>();
-      final quoteMap = {for (final row in rows) row['f12'].toString(): row};
+      for (var start = 0; start < holdings.length; start += 80) {
+        final batch = holdings.skip(start).take(80).toList();
+        final secids = batch.map((item) => '${marketFromCode(item.code)}.${item.code}').join(',');
+        final uri = Uri.parse('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=$secids&fields=f2,f3,f6,f8,f12,f14,f62,f66,f69,f72,f75,f100,f184&rt=${DateTime.now().millisecondsSinceEpoch}');
+        final response = await _client.get(uri, headers: noCacheHeaders()).timeout(const Duration(seconds: 8));
+        final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+        final data = payload['data'] as Map<String, dynamic>?;
+        final rows = (data?['diff'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>();
+        for (final row in rows) {
+          quoteMap[row['f12'].toString()] = row;
+        }
+      }
       return holdings.map((holding) {
         final quote = quoteMap[holding.code];
         final change = quote == null ? null : toNullableDouble(quote['f3']);
@@ -4219,15 +4404,20 @@ class FundService {
 
   Future<List<StockTailSignal>> _loadStockTailSignals(List<StockHolding> holdings) async {
     final top = List<StockHolding>.from(holdings)..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
-    final tasks = top.take(5).map((holding) => _loadStockTailSignal(holding).catchError((_) {
-          return StockTailSignal(
-            code: holding.code,
-            name: holding.name,
-            holdingPct: holding.holdingPct,
-            ready: false,
-          );
-        }));
-    return Future.wait(tasks);
+    final results = <StockTailSignal>[];
+    for (var start = 0; start < top.length; start += 80) {
+      final batch = top.skip(start).take(80);
+      final tasks = batch.map((holding) => _loadStockTailSignal(holding).catchError((_) {
+            return StockTailSignal(
+              code: holding.code,
+              name: holding.name,
+              holdingPct: holding.holdingPct,
+              ready: false,
+            );
+          }));
+      results.addAll(await Future.wait(tasks));
+    }
+    return results;
   }
 
   Future<StockTailSignal> _loadStockTailSignal(StockHolding holding) async {
@@ -4247,7 +4437,7 @@ class FundService {
       }
       final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final points = trendPointsFromPayload(payload);
-      final tail = tailChangeBetween(points, 14, 40, 15, 0);
+      final tail = tailChangeBetween(points, 14, 50, 15, 0);
       if (tail == null) {
         return StockTailSignal(
           code: holding.code,
@@ -4263,7 +4453,18 @@ class FundService {
         ready: true,
         changePct: tail.changePct,
         volumeRatio: tail.volumeRatio,
-        momentumScore: tail.changePct * tail.volumeRatio * holding.holdingPct / 100,
+        momentumScore: const MomentumEngine()
+            .calculateFactor(
+              MomentumInput(
+                code: holding.code,
+                name: holding.name,
+                rank: 1,
+                weightPct: holding.holdingPct,
+                priceSlopePct: tail.changePct,
+                volumeSpikeRatio: tail.volumeRatio,
+              ),
+            )
+            .momentumScore,
         startTime: tail.startTime,
         endTime: tail.endTime,
       );
@@ -4310,8 +4511,8 @@ class FundService {
     final focus = List<StockHolding>.from(holdings)..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
     if (focus.isEmpty) {
       return SmartMoneySignal(
-        summary: '暂时还没有拿到机构席位和事件层面的增量线索，先只看盘面承接。',
-        detail: '暂时还没有拿到机构席位和事件层面的增量线索，判断重心先回到板块资金、尾盘承接和量价变化。',
+        summary: '暂时还没有拿到机构席位和事件层面的增量线索，先只看真实资金和量价变化。',
+        detail: '暂时还没有拿到机构席位和事件层面的增量线索，判断重心先回到板块资金、最后10分钟放量方向和量价变化。',
         tone: 'warn',
         score: 0,
         evidenceCount: 0,
@@ -4672,6 +4873,7 @@ class FundService {
     PortfolioItem item,
     String holdingSourceText,
     double totalCapital, {
+    NavCorrectionResult? navCorrection,
     YesterdayReview? yesterdayReview,
     FactorCalibrationProfile? calibration,
   }) {
@@ -4685,15 +4887,20 @@ class FundService {
     final useOfficialValue = shouldUseOfficialNav(last, realtime);
     final hasFundRealtime = realtime != null && !useOfficialValue;
     final latestReturn = last.equityReturn ?? (returns.isEmpty ? 0 : returns.last);
+    final rawRealtimeNav = hasFundRealtime ? realtime!.estimatedNav : last.value;
+    final correctedRealtimeNav = navCorrection?.correctedNav ?? rawRealtimeNav;
+    final correctedEstimatePct = realtime != null && realtime.officialNav > 0
+        ? (correctedRealtimeNav / realtime.officialNav - 1) * 100
+        : null;
     final todayPct = useOfficialValue
         ? latestReturn
         : hasFundRealtime
-            ? realtime!.estimatePct
+            ? (correctedEstimatePct ?? realtime!.estimatePct)
             : (hasStockRealtime ? contribution : latestReturn);
     final decisionNav = useOfficialValue
         ? last.value
         : hasFundRealtime
-            ? realtime!.estimatedNav
+            ? correctedRealtimeNav
             : last.value;
     final majorNegative = announcements.where((row) => row.sentiment == '负面' && row.severity >= 80).firstOrNull;
     final positiveCatalyst = announcements.any((row) => row.sentiment == '正面' && row.severity >= 80);
@@ -4747,13 +4954,17 @@ class FundService {
     final breadthScore = market.marketBreadth?.score ?? 0;
 
 
+    final tailReadySignals = tailSignals.where((row) => row.ready && row.changePct != null && row.volumeRatio != null).toList();
+    final tailReadyWeight = tailReadySignals.fold<double>(0, (sum, row) => sum + row.holdingPct);
+    final tailDecisionReady = tailReadySignals.length >= 3 && tailReadyWeight >= 15;
+    final strongTailDirection = tailDecisionReady && forward.tailScore.abs() >= 2;
     final reviewAdjustment = yesterdayReview?.scoreAdjustment ?? 0;
     final etfShareScore = market.etfPricing?.shareSignalScore ?? 0;
     final etfPremiumScore = etfPremiumScoreFromRatio(market.etfPricing?.premiumDiscountRatio);
     final activeCalibration = calibration ?? const FactorCalibrationProfile(scope: 'live');
     final macroWeighted = marketBackdropScore * activeCalibration.multiplierFor('macro');
     final sectorWeighted = forward.fundFlowScore * activeCalibration.multiplierFor('sector');
-    final tailWeighted = forward.tailScore * activeCalibration.multiplierFor('tail') * 1.35;
+    final tailWeighted = forward.tailScore * activeCalibration.multiplierFor('tail') * 2.25;
     final volumeWeighted = forward.volumeScore * activeCalibration.multiplierFor('volume');
     final smartMoneyWeighted = smartMoney.score * activeCalibration.multiplierFor('smartMoney');
     final etfPricingWeighted = (etfShareScore + etfPremiumScore) * activeCalibration.multiplierFor('etfPricing');
@@ -4787,7 +4998,7 @@ class FundService {
     final availableTomorrowSignals = [
       market.board?.mainFlow != null,
       market.board?.volumeRatio != null,
-      tailSignals.where((row) => row.ready && row.changePct != null).length >= 2,
+      tailDecisionReady,
       market.marketBreadth != null,
       market.marketBreadth?.limitUpCount != null,
       market.board?.rpsPercentile != null,
@@ -4941,6 +5152,7 @@ class FundService {
       strongBuyTrigger -= 1;
     }
     final decisionReady = shouldLockTomorrowPrediction(DateTime.now());
+    final tailDataMissingAtDecision = decisionReady && !tailDecisionReady;
     final strongBearCase = decisionReady &&
         confidence != '低' &&
         confidence != '极低' &&
@@ -4961,12 +5173,13 @@ class FundService {
         forward.tailScore >= 1 &&
         smartMoney.score >= 0 &&
         resonance.score >= 0;
-    final directionUnclear = conflictCount >= 2 ||
-        fragileAlignmentCount >= 3 ||
-        (confidence == '极低') ||
-        (confidence == '低' && probabilityDistance < 22) ||
-        (confidence == '中低' && probabilityDistance < 12) ||
-        (confidence == '中' && probabilityDistance < 8);
+    final directionUnclear = !strongTailDirection &&
+        (conflictCount >= 2 ||
+            fragileAlignmentCount >= 3 ||
+            (confidence == '极低') ||
+            (confidence == '低' && probabilityDistance < 22) ||
+            (confidence == '中低' && probabilityDistance < 12) ||
+            (confidence == '中' && probabilityDistance < 8));
 
     var buyRatio = 0.0;
     var sellRatio = 0.0;
@@ -5010,7 +5223,26 @@ class FundService {
       sellRatio = max(sellRatio, isHeavyPosition ? 0.10 : 0.06);
       action = '缩量上涨，先降风险';
     }
-    if (confidence == '低' && totalScore.abs() < 4) {
+    if (tailDataMissingAtDecision) {
+      buyRatio = 0.0;
+      sellRatio = 0.0;
+      action = '重仓股尾盘数据不足，今天先不动';
+      tomorrowTrend = '明天方向待确认';
+      confidence = '低';
+    } else if (decisionReady && forward.tailScore <= -2 && !strongBullCase) {
+      buyRatio = 0.0;
+      sellRatio = max(sellRatio, isHeavyPosition ? 0.12 : 0.08);
+      action = '重仓股最后10分钟放量下跌，先卖出一部分';
+    } else if (decisionReady && forward.tailScore >= 2 && etfPremiumHigh) {
+      buyRatio = 0.0;
+      sellRatio = max(sellRatio, isHeavyPosition ? 0.08 : 0.04);
+      action = '尾盘放量上涨，但ETF溢价高，先不追';
+    } else if (decisionReady && forward.tailScore >= 2 && !t7Risk && !macroEventRisk && !etfPremiumHigh && !strongBearCase) {
+      sellRatio = 0.0;
+      buyRatio = max(buyRatio, confidence.startsWith('中') ? 0.10 : 0.06);
+      action = '重仓股最后10分钟放量上涨，可按比例买入';
+    }
+    if (confidence == '低' && totalScore.abs() < 4 && !strongTailDirection) {
       buyRatio = 0.0;
       sellRatio = 0.0;
       action = decisionReady ? '今天观望，不买不卖' : '14:55给最终建议';
@@ -5076,6 +5308,13 @@ class FundService {
               ? '明天大概率会跌'
               : '明天小概率会跌';
     }
+    if (tailDataMissingAtDecision) {
+      buyRatio = 0.0;
+      sellRatio = 0.0;
+      action = '重仓股尾盘数据不足，今天先不动';
+      tomorrowTrend = '明天方向待确认';
+      confidence = '低';
+    }
 
     final macroScore = ((market.overnight?.score ?? 0) + marketBackdropScore + breadthScore).toDouble();
     final sectorTone = toneFromScore(forward.fundFlowScore.toDouble());
@@ -5139,7 +5378,11 @@ class FundService {
       smartMoneyTone: smartMoneyTone,
       etfPricingState: etfPricingState,
       etfPricingTone: etfPricingTone,
-      costDeviationText: volumeState,
+      costDeviationText: joinSentences([
+        volumeState,
+        if (navCorrection != null)
+          '隐形底仓误差修正已接入，${navCorrection.algorithm} 用 ${navCorrection.sampleSize} 条真实误差把估值修正 ${navCorrection.correction >= 0 ? '+' : ''}${navCorrection.correction.toStringAsFixed(5)}。',
+      ]),
       deviationTone: volumeTone,
       resonanceState: resonanceState,
       resonanceTone: resonanceTone,
@@ -5156,7 +5399,7 @@ class FundService {
         '${todayTone.reason}${useOfficialValue ? ' 晚上已切换为实际净值 ${last.value.toStringAsFixed(4)}。' : hasFundRealtime ? ' 当前盘中估值 ${pct(todayPct)}，更新时间 ${realtime!.updateTime}。' : ' 当前盘中估值暂缺，所以今天只按已经拿到的真实净值、持仓和公告来判断。'}';
     final plainTrendText = '$todayState，$tomorrowTrend；$futureDaysText，波动$volatilityText，下跌风险$downsideRiskText。';
     final todaySimpleText = sellRatio > 0
-        ? '今天盘面偏防守：板块资金、尾盘承接或高影响事件里有风险信号，继续追容易被回撤打到。'
+        ? '今天盘面偏防守：板块资金、最后10分钟放量方向或高影响事件里有风险信号，继续追容易被回撤打到。'
         : buyRatio > 0
             ? strongBullCase
                 ? '今天盘面明显转强：板块资金、后面几天趋势和风险约束同时支持做多。'
@@ -5190,7 +5433,8 @@ class FundService {
                     ? '新手建议：这不是普通减仓，是明天大跌风险很高时的退出防守。'
                     : '新手建议：先卖出一小部分，把回撤风险压住；不是清仓，是先防守。'
                 : '新手建议：今天先不动，等更明确的止跌或放量确认。';
-    final actionReason = '$plainTrendText\n\n$todaySimpleText\n\n$tomorrowSimpleText\n\n$actionText';
+    final cutoffText = '时间规则：14:55 重点看公开持仓股票最后10分钟是否放量；15:00 前买入才参与明天涨跌，15:00 后买入顺延到后天。';
+    final actionReason = '$plainTrendText\n\n$todaySimpleText\n\n$tomorrowSimpleText\n\n$actionText\n\n$cutoffText';
     final upperTriggerValue = recentResistance > decisionNav ? recentResistance : decisionNav * (1 + max(0.02, atr14 / 100));
     final lowerTriggerValue = recentSupport < decisionNav ? recentSupport : decisionNav * (1 - max(0.025, atr14 / 100));
     final battlePlan = GridBattlePlan(
@@ -5224,7 +5468,7 @@ class FundService {
             strongBearCase
                 ? '明天大概率会大跌，后面 1-2 天也偏弱，今天先卖出全部持仓是为了躲开连续回撤。'
                 : majorNegative != null ? '${majorNegative.stockName}的负面消息还在压情绪，短线先别硬扛。' : (duration.tone == 'bad' ? '$futureDaysText，短线回调压力已经变大。' : '$tomorrowTrend，$downsideRiskText风险，先别把仓位压得太重。'),
-            forward.volumeScore <= -1 ? '今天虽然还在涨，但成交量没跟上，新资金接力偏弱。' : '尾盘没有看到很强的抢筹，买盘接力还不够坚决。',
+            forward.volumeScore <= -1 ? '今天虽然还在涨，但成交量没跟上，新资金接力偏弱。' : '最后10分钟没有有效放量上涨，买盘接力还不够坚决。',
             '建议卖出当前持仓的 ${operationRatioText(sellRatio, sell: true)}，用比例控制风险，不再按金额提示。',
           ].join('\n')
         : [
@@ -5286,6 +5530,7 @@ class FundService {
       holdingStatusBadge: holdingStatusBadge,
       holdingStatusTone: holdingStatusTone,
       navPoints: points,
+      navCorrection: navCorrection,
       todayLockedAt: '',
       tomorrowLockedAt: '',
     );
@@ -6481,6 +6726,7 @@ class FundAnalysis {
     required this.holdingStatusBadge,
     required this.holdingStatusTone,
     required this.navPoints,
+    this.navCorrection,
     this.yesterdayReview,
     this.todayLockedAt = '',
     this.tomorrowLockedAt = '',
@@ -6528,6 +6774,7 @@ class FundAnalysis {
   final String holdingStatusBadge;
   final String holdingStatusTone;
   final List<NavPoint> navPoints;
+  final NavCorrectionResult? navCorrection;
   final YesterdayReview? yesterdayReview;
   final String todayLockedAt;
   final String tomorrowLockedAt;
@@ -6564,6 +6811,7 @@ class FundAnalysis {
     String? summaryLine,
     DecisionModel? decision,
     GridBattlePlan? battlePlan,
+    NavCorrectionResult? navCorrection,
     YesterdayReview? yesterdayReview,
     String? todayLockedAt,
     String? tomorrowLockedAt,
@@ -6611,6 +6859,7 @@ class FundAnalysis {
       holdingStatusBadge: holdingStatusBadge,
       holdingStatusTone: holdingStatusTone,
       navPoints: this.navPoints,
+      navCorrection: navCorrection ?? this.navCorrection,
       yesterdayReview: yesterdayReview ?? this.yesterdayReview,
       todayLockedAt: todayLockedAt ?? this.todayLockedAt,
       tomorrowLockedAt: tomorrowLockedAt ?? this.tomorrowLockedAt,
@@ -6911,9 +7160,14 @@ List<StockHolding> parseHoldingsHtml(String raw) {
         holdingPct: holdingPct,
       ),
     );
-    if (holdings.length >= 10) break;
   }
-  return holdings;
+  final deduped = <String, StockHolding>{};
+  for (final item in holdings) {
+    final old = deduped[item.code];
+    if (old == null || item.holdingPct > old.holdingPct) deduped[item.code] = item;
+  }
+  final result = deduped.values.toList()..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
+  return result;
 }
 
 dynamic decodeNestedFundPayload(dynamic payload) {
@@ -7082,10 +7336,10 @@ String compactDecisionText(String label, String value, String tone) {
       if (tone == 'bad') return '板块资金偏流出，追涨风险更高。';
       return '板块资金方向不够清楚，先不做强判断。';
     case '尾盘动向':
-      if (clean.contains('合力抢筹') || clean.contains('分化')) return '核心重仓股尾盘分化，未见合力抢筹。';
-      if (clean.contains('走强') || clean.contains('抢筹')) return '核心重仓股尾盘走强，有资金抢筹迹象。';
-      if (clean.contains('走弱') || clean.contains('卖压')) return '核心重仓股尾盘走弱，卖压还没散。';
-      return tone == 'good' ? '尾盘承接偏强。' : tone == 'bad' ? '尾盘承接偏弱。' : '尾盘没有给出强方向。';
+      if (clean.contains('没有放量') || clean.contains('无效')) return '最后10分钟未放量，尾盘不参与判断。';
+      if (clean.contains('放量上涨') || clean.contains('偏多')) return '重仓股最后10分钟放量上涨，次日偏多。';
+      if (clean.contains('放量下跌') || clean.contains('偏空')) return '重仓股最后10分钟放量下跌，次日偏空。';
+      return tone == 'good' ? '最后10分钟放量偏多。' : tone == 'bad' ? '最后10分钟放量偏空。' : '尾盘没有有效放量方向。';
     case '聪明资金':
       if (tone == 'good') return '机构、大单和杠杆资金偏积极。';
       if (tone == 'bad') return '机构、大单和杠杆资金偏谨慎。';
@@ -7098,9 +7352,9 @@ String compactDecisionText(String label, String value, String tone) {
       return 'ETF 折溢价等待刷新，暂不作为硬判断。';
     case '量价状态':
       if (clean.contains('量价背离') || clean.contains('量能没有跟上')) return '上涨缺少量能配合，追价意愿偏弱。';
-      if (clean.contains('上涨时量能')) return '上涨时量能还能配合，承接不差。';
+      if (clean.contains('上涨时量能')) return '上涨时量能还能配合，资金没有明显撤退。';
       if (clean.contains('上涨') && clean.contains('下跌')) return '市场广度已纳入判断，指数没有单边确认。';
-      return tone == 'good' ? '量价配合偏好。' : tone == 'bad' ? '量价配合偏弱。' : '量能还不够清楚，先看承接。';
+      return tone == 'good' ? '量价配合偏好。' : tone == 'bad' ? '量价配合偏弱。' : '量能还不够清楚，先看资金方向。';
     case '趋势共振':
       if (tone == 'good') return '大盘、板块和均线方向偏顺。';
       if (tone == 'bad') return '当前位置接近压力位，短线缺少上行动能。';
@@ -7354,15 +7608,25 @@ TailChange? tailChangeBetween(List<TrendPoint> points, int startHour, int startM
   if (end.time.isBefore(start.time) || start.close <= 0) return null;
   final startPoint = start;
   final endPoint = end;
-  final segmentPoints = today.where((item) => !item.time.isBefore(startPoint.time) && !item.time.isAfter(endPoint.time)).toList();
-  final segmentAmount = segmentPoints.fold<double>(0, (sum, item) => sum + item.amount);
-  final completedMinutes = max(1, tradingMinute(endPoint.time));
-  final completedAmount = today
-      .where((item) => tradingMinute(item.time) <= completedMinutes)
+  final startMinute = tradingMinute(startPoint.time);
+  final endMinute = tradingMinute(endPoint.time);
+  final windowMinutes = max(1, endMinute - startMinute);
+  final previousStartMinute = max(0, startMinute - windowMinutes);
+  final segmentAmount = today
+      .where((item) {
+        final minute = tradingMinute(item.time);
+        return minute > startMinute && minute <= endMinute;
+      })
       .fold<double>(0, (sum, item) => sum + item.amount);
-  final completedBuckets = max(1.0, completedMinutes / 25);
-  final averageBucketAmount = completedAmount <= 0 ? 0 : completedAmount / completedBuckets;
-  final volumeRatio = averageBucketAmount <= 0 ? 1.0 : (segmentAmount / averageBucketAmount).clamp(0.0, 6.0).toDouble();
+  final previousAmount = today
+      .where((item) {
+        final minute = tradingMinute(item.time);
+        return minute > previousStartMinute && minute <= startMinute;
+      })
+      .fold<double>(0, (sum, item) => sum + item.amount);
+  final volumeRatio = previousAmount <= 0
+      ? (segmentAmount > 0 ? 6.0 : 0.0)
+      : (segmentAmount / previousAmount).clamp(0.0, 6.0).toDouble();
   return TailChange(
     changePct: (endPoint.close / startPoint.close - 1) * 100,
     volumeRatio: volumeRatio,
@@ -7656,8 +7920,8 @@ BoardSignal? boardSignalFromHoldings(String theme, List<StockHolding> holdings) 
   final risingCount = quoted.where((item) => (item.changePct ?? 0) > 0).length;
   final fallingCount = quoted.where((item) => (item.changePct ?? 0) < 0).length;
   return BoardSignal(
-    name: theme.isEmpty ? '重仓股测算' : '$theme重仓股测算',
-    source: '前十大重仓股实时测算',
+    name: theme.isEmpty ? '公开持仓测算' : '$theme公开持仓测算',
+    source: '公开持仓股票实时测算',
     changePct: weightedChange,
     mainFlow: flow,
     mainFlowPct: averageHoldingFlowPct(holdings),
@@ -7774,10 +8038,10 @@ String volumeStateText(BoardSignal? board, double todayPct) {
   if (board == null) return '量价等待板块行情刷新，先看分时尾盘确认';
   final amountText = board.amount == null ? '' : '，成交额 ${cnAmount(board.amount!)}';
   final flow = board.mainFlow ?? 0;
-  if (todayPct > 0.2 && flow > 0) return '放量上涨倾向：上涨同时有资金承接$amountText';
+  if (todayPct > 0.2 && flow > 0) return '放量上涨倾向：上涨同时有资金流入$amountText';
   if (todayPct > 0.2 && flow < 0) return '缩量/背离上涨：净值上涨但资金流出$amountText';
   if (todayPct < -0.2 && flow < 0) return '放量下跌倾向：下跌叠加资金流出$amountText';
-  if (todayPct < -0.2 && flow > 0) return '下跌有承接：净值回落但资金回流$amountText';
+  if (todayPct < -0.2 && flow > 0) return '下跌但资金回流：净值回落时仍有资金买入$amountText';
   return '量价中性：价格波动不大，资金强弱还不明显$amountText';
 }
 
@@ -7800,7 +8064,7 @@ ForwardDecisionScore buildForwardDecisionScore({
   var fundFlowScore = 0;
   if (flow != null && flow > 1000000000) fundFlowScore = 2;
   if (flow != null && flow < -1000000000) fundFlowScore = -2;
-  final boardSourceHint = board?.source == '前十大重仓股实时测算' ? '按前十大重仓股实时表现测算，' : '';
+  final boardSourceHint = board?.source == '公开持仓股票实时测算' ? '按公开持仓股票实时表现测算，' : '';
   final risingCount = board?.risingCount;
   final fallingCount = board?.fallingCount;
   final breadthText = risingCount == null || fallingCount == null
@@ -7823,81 +8087,93 @@ ForwardDecisionScore buildForwardDecisionScore({
               ? joinSentences(['$boardSourceHint主力净流入 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，资金仍在买入。', breadthText])
               : joinSentences(['$boardSourceHint主力净流出 ${cnAmount(flow.abs())}，${board.name}${pct(board.changePct)}，抛压偏重。', breadthText]);
 
-  final readyTails = tailSignals.where((item) => item.ready && item.changePct != null && item.momentumScore != null).toList();
-  final tailWeightTotal = readyTails.fold<double>(0, (sum, item) => sum + item.holdingPct);
-  final weightedTailChange = tailWeightTotal <= 0
+  const tailVolumeSpikeThreshold = 1.50;
+  final readyTails = tailSignals.where((item) => item.ready && item.changePct != null && item.volumeRatio != null).toList();
+  final spikeTails = readyTails.where((item) => (item.volumeRatio ?? 0) >= tailVolumeSpikeThreshold).toList();
+  final momentumInputs = <MomentumInput>[];
+  for (var i = 0; i < readyTails.length; i += 1) {
+    final item = readyTails[i];
+    momentumInputs.add(
+      MomentumInput(
+        code: item.code,
+        name: item.name,
+        rank: i + 1,
+        weightPct: item.holdingPct,
+        priceSlopePct: item.changePct!,
+        volumeSpikeRatio: item.volumeRatio ?? 0,
+      ),
+    );
+  }
+  final momentumSignal = const MomentumEngine().decide(momentumInputs);
+  final readyWeightTotal = readyTails.fold<double>(0, (sum, item) => sum + item.holdingPct);
+  final spikeWeightTotal = spikeTails.fold<double>(0, (sum, item) => sum + item.holdingPct);
+  final weightedTailChange = spikeWeightTotal <= 0
       ? null
-      : readyTails.fold<double>(0, (sum, item) => sum + item.changePct! * item.holdingPct) / tailWeightTotal;
-  final totalMomentum = readyTails.fold<double>(0, (sum, item) => sum + item.momentumScore!);
-  final upTailWeight = readyTails
-      .where((item) => item.changePct! >= 0.25 && (item.volumeRatio ?? 0) >= 1.05)
+      : spikeTails.fold<double>(0, (sum, item) => sum + item.changePct! * item.holdingPct) / spikeWeightTotal;
+  final upTailWeight = spikeTails
+      .where((item) => item.changePct! > 0)
       .fold<double>(0, (sum, item) => sum + item.holdingPct);
-  final downTailWeight = readyTails
-      .where((item) => item.changePct! <= -0.25 && (item.volumeRatio ?? 0) >= 1.05)
+  final downTailWeight = spikeTails
+      .where((item) => item.changePct! < 0)
       .fold<double>(0, (sum, item) => sum + item.holdingPct);
   final top3TailSignals = [...readyTails]..sort((a, b) => b.holdingPct.compareTo(a.holdingPct));
   final strongTailBuyCount = top3TailSignals
       .take(3)
-      .where((item) => item.changePct! >= 0.35 && (item.volumeRatio ?? 0) >= 1.10)
+      .where((item) => item.changePct! > 0 && (item.volumeRatio ?? 0) >= tailVolumeSpikeThreshold)
       .length;
   final strongTailSellCount = top3TailSignals
       .take(3)
-      .where((item) => item.changePct! <= -0.35 && (item.volumeRatio ?? 0) >= 1.10)
+      .where((item) => item.changePct! < 0 && (item.volumeRatio ?? 0) >= tailVolumeSpikeThreshold)
       .length;
-  final boardTailLift = board?.tail20ChangePct;
   var tailScore = 0;
-  if (weightedTailChange != null) {
-    if (totalMomentum >= 0.12 || (strongTailBuyCount >= 2 && upTailWeight >= max(8.0, tailWeightTotal * 0.36))) {
+  if (spikeWeightTotal > 0 && weightedTailChange != null) {
+    if (momentumSignal.signalType == 'BUY' || (strongTailBuyCount >= 2 && upTailWeight > downTailWeight)) {
       tailScore = 2;
-    } else if (totalMomentum >= 0.04 || weightedTailChange >= 0.18 || upTailWeight >= max(6.0, tailWeightTotal * 0.28)) {
+    } else if (upTailWeight > downTailWeight && weightedTailChange > 0) {
       tailScore = 1;
-    } else if (totalMomentum <= -0.12 || (strongTailSellCount >= 2 && downTailWeight >= max(8.0, tailWeightTotal * 0.36))) {
+    } else if (momentumSignal.signalType == 'SELL' || (strongTailSellCount >= 2 && downTailWeight > upTailWeight)) {
       tailScore = -2;
-    } else if (totalMomentum <= -0.04 || weightedTailChange <= -0.18 || downTailWeight >= max(6.0, tailWeightTotal * 0.28)) {
+    } else if (downTailWeight > upTailWeight && weightedTailChange < 0) {
       tailScore = -1;
     }
   }
-  if (boardTailLift != null && boardTailLift >= 0.45) tailScore += 1;
-  if (boardTailLift != null && boardTailLift <= -0.45) tailScore -= 1;
-  final positiveTailLeaders = readyTails
+  final positiveTailLeaders = spikeTails
     .where((item) => item.changePct! > 0)
     .toList()
     ..sort((a, b) => (b.momentumScore ?? 0).compareTo(a.momentumScore ?? 0));
-  final negativeTailLeaders = readyTails
+  final negativeTailLeaders = spikeTails
     .where((item) => item.changePct! < 0)
     .toList()
     ..sort((a, b) => (a.momentumScore ?? 0).compareTo(b.momentumScore ?? 0));
   final positiveTailNames = positiveTailLeaders
       .take(2)
-      .map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%，尾盘${pct(item.changePct!)}，量比${(item.volumeRatio ?? 1).toStringAsFixed(1)}')
+      .map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%，最后10分钟${pct(item.changePct!)}，量比${(item.volumeRatio ?? 1).toStringAsFixed(1)}')
       .join('、');
   final negativeTailNames = negativeTailLeaders
       .take(2)
-      .map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%，尾盘${pct(item.changePct!)}，量比${(item.volumeRatio ?? 1).toStringAsFixed(1)}')
+      .map((item) => '${item.name}占${item.holdingPct.toStringAsFixed(1)}%，最后10分钟${pct(item.changePct!)}，量比${(item.volumeRatio ?? 1).toStringAsFixed(1)}')
       .join('、');
   final stockTailText = readyTails.isEmpty
-      ? '核心重仓股尾盘还没有拿到足够的分时确认。'
-      : tailScore >= 2
-          ? '按披露权重和尾盘量能加权后，$positiveTailNames 动量最强，重仓股出现了合力抢筹。'
-          : tailScore <= -2
-              ? '按披露权重和尾盘量能加权后，$negativeTailNames 动量最弱，重仓股卖压没有明显松开。'
-              : tailScore == 1
-                  ? '按披露权重和尾盘量能看，重仓股尾盘略偏强，但合力还不算特别整齐。'
-                  : tailScore == -1
-                      ? '按披露权重和尾盘量能看，重仓股尾盘略偏弱，回落压力还在。'
-                      : '按披露权重和尾盘量能看，核心重仓股尾盘走势分化，未见合力抢筹。';
-  final boardTailText = boardTailLift == null
+      ? '还没拿到 14:50-15:00 的真实重仓股分钟数据，尾盘信号暂不判断。'
+      : spikeTails.isEmpty
+          ? '最后 10 分钟没有放量，成交额未比前 10 分钟放大 50% 以上，尾盘信号无效。'
+          : tailScore >= 2
+              ? '最后 10 分钟放量上涨：$positiveTailNames，按持仓占比看，次日偏多信号成立。'
+              : tailScore <= -2
+                  ? '最后 10 分钟放量下跌：$negativeTailNames，按持仓占比看，次日偏空信号成立。'
+                  : tailScore == 1
+                      ? '最后 10 分钟有放量上涨，但主要集中在部分持仓，偏多信号不够强。'
+                      : tailScore == -1
+                          ? '最后 10 分钟有放量下跌，但主要集中在部分持仓，偏空信号需要结合 ETF 折溢价确认。'
+                          : '最后 10 分钟虽有放量，但重仓股涨跌方向分散，尾盘不站队。';
+  final coverageText = readyTails.isEmpty
       ? ''
-      : boardTailLift >= 0.45
-          ? '板块最后 20 分钟继续抬升，尾盘资金没有退。'
-          : boardTailLift <= -0.45
-              ? '板块最后 20 分钟回落明显，尾盘更像在撤。'
-              : '板块最后 20 分钟变化不大，尾盘没有给出额外加分。';
+      : spikeTails.isEmpty
+          ? '14:50-15:00 已读取 ${readyTails.length}/${tailSignals.length} 只公开持仓股票，合计占披露仓位 ${readyWeightTotal.toStringAsFixed(1)}%，但没有达到放量标准。'
+          : '14:50-15:00 放量样本 ${spikeTails.length}/${readyTails.length} 只，合计占披露仓位 ${spikeWeightTotal.toStringAsFixed(1)}%；放量标准是成交额比前 10 分钟放大 50% 以上。';
   final tailText = joinSentences([
+    coverageText,
     stockTailText,
-    if (weightedTailChange != null) '重仓尾盘加权变化 ${pct(weightedTailChange)}。',
-    if (readyTails.isNotEmpty) '尾盘合成动量 ${totalMomentum >= 0 ? '+' : ''}${totalMomentum.toStringAsFixed(3)}。',
-    boardTailText,
   ]);
 
   final ratio = board?.volumeRatio;
@@ -7908,28 +8184,32 @@ ForwardDecisionScore buildForwardDecisionScore({
   if (ratio != null && todayPct < -0.15 && ratio >= 1.10) volumeScoreValue = -1;
   if (ratio != null && todayPct < -0.15 && ratio < 0.90) volumeScoreValue = 1;
   final volumeLabel = ratio == null
-      ? '量能还在刷新，先看盘中承接。'
+      ? '量能还在刷新，先看资金方向。'
       : todayPct > 0.15
           ? ratio < 0.72
               ? '净值继续上行，但成交量明显掉下来，量价背离偏重。'
               : ratio < 0.95
                   ? '上涨但量能没有跟上，追价意愿偏弱。'
-                  : '上涨时量能还能配合，资金承接不算差。'
+                  : '上涨时量能还能配合，资金没有明显撤退。'
           : todayPct < -0.15
               ? ratio >= 1.10
                   ? '回落时量能放大，抛压释放得更彻底。'
                   : ratio < 0.90
-                      ? '回落但量能没有失控，下方承接还在试探。'
+                      ? '回落但量能没有失控，资金还没有明显踩踏。'
                       : '回落时量能中性，情绪偏谨慎。'
               : '量能和昨天同段差不多，方向还不够明确。';
 
-  final total = fundFlowScore + tailScore + volumeScoreValue;
-  final conclusion = total >= 3
-      ? '明天更像偏强开局'
-      : total <= -3
-          ? '明天更像低开承压'
-          : '明天更像上下拉扯';
-  final readyCount = [board != null && flow != null, tailWeightTotal >= 12, ratio != null].where((item) => item).length;
+  final total = fundFlowScore + tailScore * 2 + volumeScoreValue;
+  final conclusion = tailScore >= 2
+      ? '重仓股最后10分钟放量上涨，明天更偏向上涨'
+      : tailScore <= -2
+          ? '重仓股最后10分钟放量下跌，明天更偏向下跌'
+          : total >= 4
+              ? '明天更像偏强开局'
+              : total <= -4
+                  ? '明天更像低开承压'
+                  : '明天更像上下拉扯';
+  final readyCount = [board != null && flow != null, readyWeightTotal >= 15 && readyTails.length >= 3, ratio != null].where((item) => item).length;
   final confidence = readyCount >= 3
       ? '中等置信度'
       : readyCount == 2
@@ -7970,9 +8250,9 @@ double? intradayDeltaSinceClock(List<IntradayPoint> points, int hour, int minute
 
 String tailStateText(double? delta) {
   if (delta == null) return '尾盘信号等待分钟估值更新';
-  if (delta > 0.28) return '14:30附近以来估值抬升 ${pct(delta)}，有尾盘抢筹迹象';
-  if (delta < -0.28) return '14:30附近以来估值回落 ${pct(delta)}，尾盘抛压偏重';
-  return '14:30附近以来变化 ${pct(delta)}，尾盘暂未给出强方向';
+  if (delta > 0.28) return '最后10分钟估值抬升 ${pct(delta)}，需配合放量才算有效';
+  if (delta < -0.28) return '最后10分钟估值回落 ${pct(delta)}，需配合放量才算有效';
+  return '最后10分钟变化 ${pct(delta)}，尾盘暂未给出强方向';
 }
 
 double tailScore(double? delta) {
@@ -8302,11 +8582,25 @@ bool isTradingTime() {
 
 bool shouldAutoRefreshData() {
   final now = DateTime.now();
-  if (now.weekday == DateTime.saturday || now.weekday == DateTime.sunday) return false;
+  if (!isFundTradingDay(now)) return false;
   final minute = now.hour * 60 + now.minute;
   final tradingWindow = (minute >= 9 * 60 + 25 && minute <= 11 * 60 + 35) || (minute >= 12 * 60 + 55 && minute <= 15 * 60 + 5);
   final eveningNetValueWindow = minute >= 18 * 60 && minute <= 23 * 60 + 30;
   return tradingWindow || eveningNetValueWindow;
+}
+
+bool shouldHighFrequencyTailRefresh() {
+  final now = DateTime.now();
+  if (!isFundTradingDay(now)) return false;
+  final minute = now.hour * 60 + now.minute;
+  return minute >= 14 * 60 + 50 && minute <= 15 * 60;
+}
+
+bool shouldShowLocalDecisionNotice() {
+  final now = DateTime.now();
+  if (!isFundTradingDay(now)) return false;
+  final minute = now.hour * 60 + now.minute;
+  return minute >= 14 * 60 + 55 && minute <= 15 * 60 + 10;
 }
 
 String shortRealtimeTime(String value) {
@@ -8779,9 +9073,9 @@ String buildMonthlyRecommendationReason(RecommendationCandidate candidate, FundA
   }
 
   if (analysis.decision.trendTone == 'good') {
-    positives.add('尾盘承接还在');
+    positives.add('最后10分钟放量方向偏多');
   } else if (analysis.decision.trendTone == 'bad') {
-    cautions.add('尾盘没看到特别强的抢筹');
+    cautions.add('最后10分钟没有有效放量上涨');
   }
 
   if (analysis.decision.smartMoneyTone == 'good') {
@@ -8884,9 +9178,9 @@ String factorShortText(String label, String tone) {
     return '板块资金不明';
   }
   if (label == '尾盘动向') {
-    if (tone == 'good') return '尾盘有承接';
-    if (tone == 'bad') return '尾盘没抢筹';
-    return '尾盘方向一般';
+    if (tone == 'good') return '放量上涨';
+    if (tone == 'bad') return '放量下跌';
+    return '未放量';
   }
   if (label == '后面几天') {
     if (tone == 'good') return '后面几天偏强';
@@ -8898,7 +9192,7 @@ String factorShortText(String label, String tone) {
 
 String whyNotBuyText(FundAnalysis analysis) {
   if (analysis.sellRatio > 0) {
-    return '为什么今天不买：不是判断一定暴跌，而是现在风险收益不划算。场外基金买入后 7 天内卖出成本高，等资金回流和尾盘承接更清楚再动。';
+    return '为什么今天不买：不是判断一定暴跌，而是现在风险收益不划算。场外基金买入后 7 天内卖出成本高，等资金回流和最后10分钟放量方向更清楚再动。';
   }
   if (analysis.downsideRiskText == '高') {
     return '为什么今天不买：后面几天下跌风险偏高，现在追进去容易被回撤打到，先保留现金更舒服。';
@@ -8908,7 +9202,7 @@ String whyNotBuyText(FundAnalysis analysis) {
 
 String optimisticScenarioText(FundAnalysis analysis) {
   if (analysis.buyRatio > 0) {
-    return '板块资金继续回流，核心重仓股尾盘承接变强，明天走出反弹。';
+    return '板块资金继续回流，核心重仓股最后10分钟放量上涨，明天走出反弹。';
   }
   return '资金回流，ETF 折溢价保持平稳，明天跌幅收窄或小反弹。';
 }
@@ -8921,7 +9215,7 @@ String pessimisticScenarioText(FundAnalysis analysis) {
   if (analysis.sellRatio >= 0.995) {
     return '板块继续流出，核心股同步走弱，明天大跌并拖出 1-2 天回撤。';
   }
-  return '板块继续流出，尾盘承接失败，回撤扩大 1%-2%。';
+  return '板块继续流出，核心重仓股最后10分钟放量下跌，回撤扩大 1%-2%。';
 }
 
 double? estimatedHoldingContribution(StockHolding item) {
@@ -8963,6 +9257,13 @@ List<DataTruthItem> realDataChecklist(FundAnalysis analysis) {
       available: analysis.realtimeAvailable,
     ),
     DataTruthItem(
+      title: '隐形底仓误差修正',
+      detail: analysis.navCorrection == null
+          ? '还没有积累到“盘中估值 vs 晚间官方净值”的真实误差记录，暂不修正，不补假数据。'
+          : '${analysis.navCorrection!.algorithm} 已接入：${analysis.navCorrection!.detail}；本次修正 ${analysis.navCorrection!.correction >= 0 ? '+' : ''}${analysis.navCorrection!.correction.toStringAsFixed(5)}。',
+      available: analysis.navCorrection != null,
+    ),
+    DataTruthItem(
       title: '当日分时图',
       detail: analysis.intradayPoints.isNotEmpty
           ? (analysis.intradayNote.isEmpty ? '已读取真实分钟级基金估值点 ${analysis.intradayPoints.length} 个。' : '${analysis.intradayNote} 已读取 ${analysis.intradayPoints.length} 个真实分钟点。')
@@ -8970,10 +9271,10 @@ List<DataTruthItem> realDataChecklist(FundAnalysis analysis) {
       available: analysis.intradayPoints.isNotEmpty,
     ),
     DataTruthItem(
-      title: '重仓股与实时行情',
+      title: '持仓股票与实时行情',
       detail: analysis.holdings.isEmpty
-          ? '未拿到公开重仓股数据。'
-          : '已读取 ${analysis.holdings.length} 只公开重仓股，其中 ${analysis.holdings.where((item) => item.changePct != null).length} 只有实时行情。',
+          ? '未拿到公开持仓股票数据。'
+          : '已读取 ${analysis.holdings.length} 只公开持仓股票，其中 ${analysis.holdings.where((item) => item.changePct != null).length} 只已有实时行情。',
       available: analysis.holdings.isNotEmpty,
     ),
     DataTruthItem(
@@ -9206,7 +9507,7 @@ String predictionSubtitle(String label, String text) {
   final direction = predictionDirectionFromText(text);
   if (label == '今天') {
     if (direction > 0) return '今天实际走强，收益正在增加';
-    if (direction < 0) return '今天实际走弱，先看尾盘承接';
+    if (direction < 0) return '今天实际走弱，先看最后10分钟放量方向';
     return '今天波动不大，还没走出方向';
   }
   if (direction > 0) return '看明天能不能继续放量';
@@ -9289,7 +9590,7 @@ String reviewDiagnosis(AnalysisLockState lock, int predictedDirection, int actua
     return '昨天把信号按观望处理，但今天实际${directionName(actualDirection)}，属于观望漏判；说明昨天临近收盘时，$actualText 这些真实信号已经开始朝同一方向收敛，只是模型当时没有给到足够权重。';
   }
   if (actualDirection == 0) {
-    return '昨天看${directionName(predictedDirection)}，但今天没有走出方向，说明$expectedText的延续性不足；这些信号当时看起来够强，但缺少后续量能、广度或尾盘承接确认，所以被高估了。';
+    return '昨天看${directionName(predictedDirection)}，但今天没有走出方向，说明$expectedText的延续性不足；这些信号当时看起来够强，但缺少后续量能、广度或最后10分钟放量确认，所以被高估了。';
   }
   return '昨天看${directionName(predictedDirection)}主要依赖$expectedText，但今天实际${directionName(actualDirection)}；这说明昨天真正更该重视的，其实是$actualText这些反向约束项。模型没有提前识别到它们的压制或修复力度，所以方向被看反了。';
 }
@@ -9300,15 +9601,15 @@ String reviewNextAdjustment(int predictedDirection, int actualDirection, bool su
     if (scoreAdjustment == 0) {
       return '这次学习结果是继续保留观望纪律：没有真实突破或破位时，不把零碎信号硬翻译成买卖动作；下次再遇到信号分裂，仍以少动为先。';
     }
-    return '这次学习结果是把$adjustment写回下一轮模型；同类信号再次出现时，方向权重会保留，但依然要求尾盘承接、量能配合和广度确认至少再过一道关。';
+    return '这次学习结果是把$adjustment写回下一轮模型；同类信号再次出现时，方向权重会保留，但依然要求最后10分钟放量、量能配合和广度确认至少再过一道关。';
   }
   if (predictedDirection == 0) {
-    return '这次学习结果是把$adjustment写回下一轮模型；下次如果观望状态下又出现真实单边结果，就把关联板块真实分时、市场广度和尾盘主力斜率抬成补充触发器，不再只盯总分。';
+    return '这次学习结果是把$adjustment写回下一轮模型；下次如果观望状态下又出现真实单边结果，就把关联板块真实分时、市场广度和最后10分钟放量方向抬成补充触发器，不再只盯总分。';
   }
   if (actualDirection == 0) {
     return '这次学习结果是把$adjustment写回下一轮模型；以后同类方向判断如果缺少量能确认、广度确认或 ETF 折溢价约束，就先把强结论降成观望。';
   }
-  return '这次学习结果是把$adjustment写回下一轮模型；以后如果反向信号已经在板块资金、市场广度、ETF 折溢价或尾盘承接里同时出现两项以上，就直接下调置信度，并取消激进买卖动作。';
+  return '这次学习结果是把$adjustment写回下一轮模型；以后如果反向信号已经在板块资金、市场广度、ETF 折溢价或最后10分钟放量方向里同时出现两项以上，就直接下调置信度，并取消激进买卖动作。';
 }
 
 List<String> decisionFactorsByDirection(DecisionModel? decision, int direction) {
