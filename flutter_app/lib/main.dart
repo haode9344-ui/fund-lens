@@ -4,13 +4,154 @@ import 'dart:math';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
 
 import 'quant_engines.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppNotificationService.instance.init();
   runApp(const XiaoyouApp());
+}
+
+class AppNotificationService {
+  AppNotificationService._();
+
+  static final AppNotificationService instance = AppNotificationService._();
+
+  final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+  bool _ready = false;
+
+  Future<void> init() async {
+    tzdata.initializeTimeZones();
+    try {
+      tz.setLocalLocation(tz.getLocation('Asia/Hong_Kong'));
+    } catch (_) {
+      // Keep timezone package default if the bundled location cannot be resolved.
+    }
+
+    const settings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: false,
+        requestSoundPermission: true,
+      ),
+    );
+    await _plugin.initialize(settings);
+    await _plugin
+        .resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(alert: true, badge: false, sound: true);
+    _ready = true;
+    await scheduleTradingDayReminders();
+  }
+
+  NotificationDetails get _details => const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'xiaoyou_fund_signal',
+          '小又基金提醒',
+          channelDescription: '14:55 收盘提醒、14:58 预判结果、次日美股验证',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentSound: true,
+        ),
+      );
+
+  Future<void> showNow({
+    required int id,
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    if (!_ready) return;
+    await _plugin.show(id, title, body, _details, payload: payload);
+  }
+
+  Future<void> showCloseReminder() {
+    return showNow(
+      id: 145500,
+      title: '小又 14:55 提醒',
+      body: '⏰ 距收盘还有5分钟，即将生成明日预判，请注意查看',
+    );
+  }
+
+  Future<void> showPredictionResult(AlipayFundAnalysis analysis) {
+    return showNow(
+      id: 145800 + analysis.code.hashCode.abs() % 10000,
+      title: '${analysis.name} 明日预判：${alipayDirectionName(analysis.predictionDirection)}${analysis.predictionDirection > 0 ? '🔴' : analysis.predictionDirection < 0 ? '🟢' : '⚪'}',
+      body: '置信度：${analysis.confidence}\n核心依据：${alipayNotificationBasis(analysis)}',
+      payload: analysis.code,
+    );
+  }
+
+  Future<void> showUsValidation({
+    required AlipayFundAnalysis analysis,
+    required String usSummary,
+  }) {
+    final action = alipayUsValidationText(analysis, usSummary);
+    return showNow(
+      id: 91500 + analysis.code.hashCode.abs() % 10000,
+      title: '🌏 美股验证',
+      body: '$usSummary\n${analysis.name}：$action',
+      payload: analysis.code,
+    );
+  }
+
+  Future<void> scheduleTradingDayReminders() async {
+    if (!_ready) return;
+    for (var i = 0; i < 80; i++) {
+      await _plugin.cancel(550000 + i);
+      await _plugin.cancel(915000 + i);
+    }
+    final now = DateTime.now();
+    var count = 0;
+    for (var dayOffset = 0; dayOffset < 90 && count < 32; dayOffset++) {
+      final day = DateTime(now.year, now.month, now.day).add(Duration(days: dayOffset));
+      if (!isChinaATradingDay(day)) continue;
+      final closeReminder = DateTime(day.year, day.month, day.day, 14, 55);
+      final usReminder = DateTime(day.year, day.month, day.day, 9, 15);
+      if (closeReminder.isAfter(now)) {
+        await _scheduleAt(
+          id: 550000 + count,
+          time: closeReminder,
+          title: '小又 14:55 提醒',
+          body: '⏰ 距收盘还有5分钟，即将生成明日预判，请注意查看',
+        );
+      }
+      if (usReminder.isAfter(now)) {
+        await _scheduleAt(
+          id: 915000 + count,
+          time: usReminder,
+          title: '小又 9:15 美股验证',
+          body: '🌏 开盘前检查美股昨夜表现和支付宝基金预判风险。',
+        );
+      }
+      count++;
+    }
+  }
+
+  Future<void> _scheduleAt({
+    required int id,
+    required DateTime time,
+    required String title,
+    required String body,
+  }) async {
+    await _plugin.zonedSchedule(
+      id,
+      title,
+      body,
+      tz.TZDateTime.from(time, tz.local),
+      _details,
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+    );
+  }
 }
 
 class XiaoyouApp extends StatelessWidget {
@@ -41,18 +182,33 @@ class PortfolioHome extends StatefulWidget {
 
 class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserver {
   final FundService _service = FundService();
+  final AlipayFundService _alipayService = AlipayFundService();
   final Map<String, FundAnalysis> _cache = {};
   Timer? _autoRefreshTimer;
   Timer? _tailRefreshTimer;
   String _lastDecisionNoticeKey = '';
+  String _lastAlipay1455ReminderKey = '';
+  String _lastAlipay1458RefreshKey = '';
+  String _lastAlipay0915ValidationKey = '';
   List<PortfolioItem> _owned = [];
   List<PortfolioItem> _simulated = [];
+  List<AlipayFundAnalysis> _alipayFunds = [];
   int _tab = 0;
   bool _loading = true;
   bool _refreshing = false;
+  bool _alipayRefreshing = false;
 
-  List<PortfolioItem> get _currentItems => _tab == 0 ? _owned : _simulated;
-  String get _currentTitle => _tab == 0 ? '持有持仓' : '模拟持仓';
+  bool get _isAlipayTab => _tab == 1;
+  List<PortfolioItem> get _currentItems => _tab == 0
+      ? _owned
+      : _tab == 2
+          ? _simulated
+          : const <PortfolioItem>[];
+  String get _currentTitle => _tab == 0
+      ? '持有持仓'
+      : _tab == 2
+          ? '模拟持仓'
+          : '支付宝';
   String get _storageKey => _tab == 0 ? 'owned_portfolio' : 'simulated_portfolio';
 
   @override
@@ -61,11 +217,20 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     WidgetsBinding.instance.addObserver(this);
     _loadPortfolios();
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) {
-      if (shouldAutoRefreshData()) _refreshCurrent();
+      if (!_isAlipayTab && shouldAutoRefreshData()) _refreshCurrent();
     });
     _tailRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (shouldHighFrequencyTailRefresh()) {
+      if (!_isAlipayTab && shouldHighFrequencyTailRefresh()) {
         _refreshCurrent(showDecisionNotice: true);
+      }
+      if (shouldAlipay1455Reminder()) {
+        _sendAlipay1455Reminder();
+      }
+      if (shouldAlipay1458Refresh()) {
+        _refreshAlipayAt1458();
+      }
+      if (shouldAlipay0915Validation()) {
+        _sendAlipay0915Validation();
       }
     });
   }
@@ -80,7 +245,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (!_isAlipayTab && state == AppLifecycleState.resumed) {
       _refreshCurrent(showDecisionNotice: shouldShowLocalDecisionNotice());
     }
   }
@@ -91,6 +256,7 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     setState(() {
       _owned = _decodePortfolio(prefs.getString('owned_portfolio'));
       _simulated = _decodePortfolio(prefs.getString('simulated_portfolio'));
+      _alipayFunds = _decodeAlipayFunds(prefs.getString('alipay_funds_v1'));
       _loading = false;
     });
     await _refreshCurrent(clearFirst: true);
@@ -102,15 +268,32 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
     return rows.map((row) => PortfolioItem.fromJson(row as Map<String, dynamic>)).toList();
   }
 
+  List<AlipayFundAnalysis> _decodeAlipayFunds(String? value) {
+    if (value == null || value.isEmpty) return [];
+    try {
+      final rows = jsonDecode(value) as List<dynamic>;
+      return rows.map((row) => AlipayFundAnalysis.fromJson(row as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<void> _saveCurrent() async {
+    if (_isAlipayTab) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_storageKey, jsonEncode(_currentItems.map((item) => item.toJson()).toList()));
+  }
+
+  Future<void> _saveAlipayFunds() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('alipay_funds_v1', jsonEncode(_alipayFunds.map((item) => item.toJson()).toList()));
   }
 
   Future<void> _refreshCurrent({
     bool clearFirst = false,
     bool showDecisionNotice = false,
   }) async {
+    if (_isAlipayTab) return;
     final items = List<PortfolioItem>.from(_currentItems);
     if (items.isEmpty) return;
     if (_refreshing) return;
@@ -169,6 +352,10 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
   }
 
   Future<void> _addFund() async {
+    if (_isAlipayTab) {
+      await _addAlipayFund();
+      return;
+    }
     final result = await showModalBottomSheet<PortfolioItem>(
       context: context,
       isScrollControlled: true,
@@ -190,11 +377,125 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
   }
 
   Future<void> _removeFund(PortfolioItem item) async {
+    if (_isAlipayTab) return;
     setState(() => _currentItems.removeWhere((row) => row.code == item.code));
     await _saveCurrent();
   }
 
+  Future<void> _addAlipayFund() async {
+    final code = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const AlipayAddFundSheet(),
+    );
+    if (code == null) return;
+    await _upsertAlipayCode(code);
+  }
+
+  Future<void> _upsertAlipayCode(String code) async {
+    if (_alipayRefreshing) return;
+    setState(() => _alipayRefreshing = true);
+    try {
+      final analysis = await _alipayService.load(code);
+      if (!mounted) return;
+      setState(() {
+        final index = _alipayFunds.indexWhere((item) => item.code == analysis.code);
+        if (index >= 0) {
+          _alipayFunds[index] = analysis;
+        } else {
+          _alipayFunds.add(analysis);
+        }
+      });
+      await _saveAlipayFunds();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('没有拉取成功：$error')),
+      );
+    } finally {
+      if (mounted) setState(() => _alipayRefreshing = false);
+    }
+  }
+
+  Future<void> _refreshAlipayFunds() async {
+    if (_alipayFunds.isEmpty || _alipayRefreshing) return;
+    setState(() => _alipayRefreshing = true);
+    final current = List<AlipayFundAnalysis>.from(_alipayFunds);
+    var changed = false;
+    try {
+      for (final item in current) {
+        try {
+          final fresh = await _alipayService.load(item.code);
+          if (!mounted) return;
+          setState(() {
+            final index = _alipayFunds.indexWhere((row) => row.code == item.code);
+            if (index >= 0) {
+              _alipayFunds[index] = fresh;
+              changed = true;
+            }
+          });
+        } catch (_) {
+          // Keep existing real data visible when a single public endpoint is slow.
+        }
+      }
+      if (changed) await _saveAlipayFunds();
+    } finally {
+      if (mounted) setState(() => _alipayRefreshing = false);
+    }
+  }
+
+  Future<void> _refreshAlipayAt1458() async {
+    if (_alipayFunds.isEmpty) return;
+    final key = dateText(DateTime.now());
+    if (_lastAlipay1458RefreshKey == key) return;
+    _lastAlipay1458RefreshKey = key;
+    await _refreshAlipayFunds();
+    for (final fund in _alipayFunds) {
+      await AppNotificationService.instance.showPredictionResult(fund);
+    }
+    if (!mounted) return;
+    if (_isAlipayTab) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('14:58 支付宝基金预判已刷新，并已逐只推送结果。')),
+      );
+    }
+  }
+
+  Future<void> _sendAlipay1455Reminder() async {
+    final key = dateText(DateTime.now());
+    if (_lastAlipay1455ReminderKey == key) return;
+    _lastAlipay1455ReminderKey = key;
+    await AppNotificationService.instance.showCloseReminder();
+    if (!mounted || !_isAlipayTab) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('⏰ 距收盘还有5分钟，即将生成明日预判，请注意查看')),
+    );
+  }
+
+  Future<void> _sendAlipay0915Validation() async {
+    if (_alipayFunds.isEmpty) return;
+    final key = dateText(DateTime.now());
+    if (_lastAlipay0915ValidationKey == key) return;
+    _lastAlipay0915ValidationKey = key;
+    final usSummary = await _alipayService.loadUsSnapshotForNotification();
+    final summary = usSummary.isEmpty ? '美股昨夜数据暂未返回' : usSummary;
+    for (final fund in _alipayFunds) {
+      await AppNotificationService.instance.showUsValidation(analysis: fund, usSummary: summary);
+    }
+    if (!mounted || !_isAlipayTab) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('9:15 美股验证已推送：$summary')),
+    );
+  }
+
+  Future<void> _removeAlipayFund(AlipayFundAnalysis item) async {
+    setState(() => _alipayFunds.removeWhere((row) => row.code == item.code));
+    await _saveAlipayFunds();
+  }
+
   Future<FundAnalysis> _updateFund(PortfolioItem updated) async {
+    if (_isAlipayTab) return _service.load(updated);
     final target = _tab == 0 ? _owned : _simulated;
     final index = target.indexWhere((item) => item.code == updated.code);
     if (index >= 0) {
@@ -211,6 +512,15 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
       await _saveCurrent();
     }
     return fresh;
+  }
+
+  void _showAlipaySkeletonNotice() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('支付宝页面骨架已独立，添加基金和真实数据接入等下一步再开启。'),
+        duration: Duration(seconds: 3),
+      ),
+    );
   }
 
   PortfolioSummary _summary() {
@@ -234,29 +544,44 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
         centerTitle: true,
         backgroundColor: AppColors.bg,
         surfaceTintColor: AppColors.bg,
+        actions: [
+          IconButton(
+            onPressed: _isAlipayTab ? _addAlipayFund : _addFund,
+            icon: const Icon(CupertinoIcons.add),
+            tooltip: '添加',
+          ),
+        ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addFund,
-        backgroundColor: AppColors.blue,
-        foregroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        child: const Icon(CupertinoIcons.add, size: 28),
-      ),
+      floatingActionButton: null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: (index) async {
           setState(() => _tab = index);
-          await _refreshCurrent(clearFirst: true);
+          if (!_isAlipayTab) await _refreshCurrent(clearFirst: true);
         },
         destinations: const [
           NavigationDestination(icon: Icon(CupertinoIcons.briefcase), label: '持有'),
+          NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), label: '支付宝'),
           NavigationDestination(icon: Icon(CupertinoIcons.chart_bar_square), label: '模拟'),
         ],
       ),
       body: _loading
           ? const Center(child: CupertinoActivityIndicator())
-          : RefreshIndicator(
-            onRefresh: () => _refreshCurrent(clearFirst: true),
+          : (_isAlipayTab
+              ? AlipayShellPage(
+                  funds: _alipayFunds,
+                  refreshing: _alipayRefreshing,
+                  onAdd: _addAlipayFund,
+                  onRefresh: _refreshAlipayFunds,
+                  onDelete: _removeAlipayFund,
+                  onOpen: (analysis) {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => AlipayFundDetailPage(analysis: analysis)),
+                    );
+                  },
+                )
+              : RefreshIndicator(
+                  onRefresh: () => _refreshCurrent(clearFirst: true),
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 96),
@@ -297,9 +622,2139 @@ class _PortfolioHomeState extends State<PortfolioHome> with WidgetsBindingObserv
                     }),
                 ],
               ),
-            ),
+                )),
     );
   }
+}
+
+class AlipayShellPage extends StatelessWidget {
+  const AlipayShellPage({
+    super.key,
+    required this.funds,
+    required this.refreshing,
+    required this.onAdd,
+    required this.onRefresh,
+    required this.onDelete,
+    required this.onOpen,
+  });
+
+  final List<AlipayFundAnalysis> funds;
+  final bool refreshing;
+  final VoidCallback onAdd;
+  final Future<void> Function() onRefresh;
+  final Future<void> Function(AlipayFundAnalysis) onDelete;
+  final void Function(AlipayFundAnalysis) onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 96),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: AppColors.line),
+              boxShadow: AppShadows.card,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: AppColors.blue.withOpacity(0.10),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Icon(Icons.account_balance_wallet_outlined, color: AppColors.blue),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('支付宝', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+                          SizedBox(height: 3),
+                          Text(
+                            '独立页面，数据不和持有/模拟共用',
+                            style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: onAdd,
+                      icon: const Icon(CupertinoIcons.add_circled),
+                      color: AppColors.blue,
+                      tooltip: '添加',
+                    ),
+                  ],
+                ),
+                if (refreshing) ...[
+                  const SizedBox(height: 14),
+                  const LinearProgressIndicator(minHeight: 3),
+                ],
+                if (funds.isEmpty) ...[
+                  const SizedBox(height: 22),
+                  Center(
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 74,
+                          height: 74,
+                          decoration: BoxDecoration(
+                            color: AppColors.softGrey,
+                            borderRadius: BorderRadius.circular(22),
+                          ),
+                          child: const Icon(CupertinoIcons.tray, color: AppColors.muted, size: 32),
+                        ),
+                        const SizedBox(height: 14),
+                        const Text('这里还没有基金', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 6),
+                        const Text(
+                          '点右上角 + 输入 6 位基金代码。这里会只保存支付宝页自己的基金，不和持有/模拟混在一起。',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: AppColors.muted, height: 1.45, fontWeight: FontWeight.w700),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (funds.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            ...funds.map(
+              (fund) => AlipayFundCard(
+                analysis: fund,
+                onTap: () => onOpen(fund),
+                onDelete: () => onDelete(fund),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class AlipayAddFundSheet extends StatefulWidget {
+  const AlipayAddFundSheet({super.key});
+
+  @override
+  State<AlipayAddFundSheet> createState() => _AlipayAddFundSheetState();
+}
+
+class _AlipayAddFundSheetState extends State<AlipayAddFundSheet> {
+  final TextEditingController _codeController = TextEditingController();
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final code = _codeController.text.trim();
+    if (!RegExp(r'^\d{6}$').hasMatch(code)) return;
+    Navigator.pop(context, code);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottom),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+        decoration: const BoxDecoration(
+          color: AppColors.bg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('添加到支付宝', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+            const SizedBox(height: 8),
+            const Text(
+              '只会保存到支付宝页面，不会进入持有或模拟。',
+              style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 14),
+            CupertinoTextField(
+              controller: _codeController,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              placeholder: '输入基金代码，例如 012863',
+              padding: const EdgeInsets.all(15),
+              decoration: inputDecoration(),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _submit,
+                icon: const Icon(CupertinoIcons.check_mark),
+                label: const Text('确认并拉取真实数据'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class AlipayFundCard extends StatelessWidget {
+  const AlipayFundCard({
+    super.key,
+    required this.analysis,
+    required this.onTap,
+    required this.onDelete,
+  });
+
+  final AlipayFundAnalysis analysis;
+  final VoidCallback onTap;
+  final Future<void> Function() onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final positive = analysis.todayPct >= 0;
+    return Dismissible(
+      key: ValueKey('alipay_${analysis.code}'),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 18),
+        decoration: BoxDecoration(color: AppColors.green.withOpacity(0.14), borderRadius: BorderRadius.circular(20)),
+        child: const Icon(CupertinoIcons.delete, color: AppColors.green),
+      ),
+      confirmDismiss: (_) async {
+        await onDelete();
+        return true;
+      },
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: CardShell(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(analysis.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                          const SizedBox(height: 5),
+                          Text(
+                            '${analysis.code} · ${analysis.fundType} · ${analysis.updatedAt}',
+                            style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(onPressed: () => onDelete(), icon: const Icon(CupertinoIcons.delete, color: AppColors.muted)),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(child: _Metric(label: '最新净值', value: analysis.latestNavText)),
+                    Expanded(
+                      child: _Metric(
+                        label: '今日涨跌',
+                        value: pct(analysis.todayPct),
+                        color: positive ? AppColors.red : AppColors.green,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(color: AppColors.softBlue, borderRadius: BorderRadius.circular(14)),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '明日预判：${analysis.predictionLabel} · 原始分 ${analysis.rawScore.toStringAsFixed(1)} · 置信度 ${analysis.confidence}',
+                        style: TextStyle(color: analysis.predictionColor, fontSize: 16, fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '跟踪指数：${analysis.indexNameText} · 关联ETF：${analysis.etfText}',
+                        style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class AlipayFundDetailPage extends StatelessWidget {
+  const AlipayFundDetailPage({super.key, required this.analysis});
+
+  final AlipayFundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    final coreReasons = alipayCoreReasons(analysis).take(3).toList();
+    final risks = alipayRiskTips(analysis).take(2).toList();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('支付宝基金', style: TextStyle(fontWeight: FontWeight.w900)),
+        centerTitle: true,
+        backgroundColor: AppColors.bg,
+        surfaceTintColor: AppColors.bg,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+        children: [
+          CardShell(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(analysis.name, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 8),
+                Text(
+                  '${analysis.code} · ${analysis.fundType} · ${analysis.updatedAt}',
+                  style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(child: _Metric(label: '最新净值', value: analysis.latestNavText)),
+                    Expanded(child: _Metric(label: '今日涨跌', value: pct(analysis.todayPct), color: analysis.todayPct >= 0 ? AppColors.red : AppColors.green)),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  analysis.predictionLabel,
+                  style: TextStyle(color: analysis.predictionColor, fontSize: 30, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '置信度 ${analysis.confidence} · 更新时间 ${analysis.updatedAt}',
+                  style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                Text(analysis.predictionReason, style: const TextStyle(height: 1.45, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 12),
+                const Text('核心依据', style: TextStyle(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 6),
+                ...coreReasons.map((item) => _AlipayBullet(text: item)),
+                if (risks.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  const Text('风险提示', style: TextStyle(fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 6),
+                  ...risks.map((item) => _AlipayBullet(text: item, warn: true)),
+                ],
+                const SizedBox(height: 10),
+                Text(
+                  '14:58 三层模型：指数 ${analysis.indexScore.toStringAsFixed(1)} 分，重仓 ${analysis.holdingsScore.toStringAsFixed(1)} 分，ETF联动 ${analysis.sectorEtfScore.toStringAsFixed(1)} 分。',
+                  style: const TextStyle(color: AppColors.muted, height: 1.4, fontSize: 12, fontWeight: FontWeight.w800),
+                ),
+                if (analysis.dataSummary.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    analysis.dataSummary,
+                    style: const TextStyle(color: AppColors.muted, height: 1.4, fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          CardShell(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('前十大重仓股', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 12),
+                if (analysis.holdings.isEmpty)
+                  const Text('东方财富接口暂未返回股票持仓。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800))
+                else
+                  ...analysis.holdings.map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(item.name, style: const TextStyle(fontWeight: FontWeight.w900)),
+                                const SizedBox(height: 3),
+                                Text('${item.code} · ${item.industry}', style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w700)),
+                              ],
+                            ),
+                          ),
+                          Text('占 ${item.weightPct.toStringAsFixed(2)}%', style: const TextStyle(fontWeight: FontWeight.w900)),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          AlipayTimedSignalSection(
+            title: '跟踪指数尾盘',
+            subtitle: analysis.indexNameText,
+            signal: analysis.indexSignal,
+          ),
+          const SizedBox(height: 12),
+          AlipayHoldingsTailSection(analysis: analysis),
+          const SizedBox(height: 12),
+          AlipaySectorEtfSection(analysis: analysis),
+          const SizedBox(height: 12),
+          AlipayFilterSection(analysis: analysis),
+          const SizedBox(height: 12),
+          AlipayLogicSection(analysis: analysis),
+          const SizedBox(height: 12),
+          AlipayPredictionHistoryCard(analysis: analysis),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlipayBullet extends StatelessWidget {
+  const _AlipayBullet({required this.text, this.warn = false});
+
+  final String text;
+  final bool warn;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(warn ? CupertinoIcons.exclamationmark_triangle_fill : CupertinoIcons.checkmark_circle_fill, size: 15, color: warn ? AppColors.green : AppColors.blue),
+          const SizedBox(width: 7),
+          Expanded(child: Text(text, style: const TextStyle(height: 1.35, fontWeight: FontWeight.w800))),
+        ],
+      ),
+    );
+  }
+}
+
+class AlipayTimedSignalSection extends StatelessWidget {
+  const AlipayTimedSignalSection({super.key, required this.title, required this.subtitle, required this.signal});
+
+  final String title;
+  final String subtitle;
+  final AlipayTimedSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 6),
+          Text(subtitle, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 12),
+          _AlipaySignalGrid(signal: signal),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlipaySignalGrid extends StatelessWidget {
+  const _AlipaySignalGrid({required this.signal});
+
+  final AlipayTimedSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(child: _AlipayMiniMetric(label: '今日涨跌', value: signal.priceDeltaPct == null ? '--' : pct(signal.priceDeltaPct!))),
+            Expanded(child: _AlipayMiniMetric(label: '量比', value: signal.volumeRatio == null ? '--' : signal.volumeRatio!.toStringAsFixed(2))),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: _AlipayMiniMetric(label: '区间A成交量', value: alipayVolumeText(signal.volumeA))),
+            Expanded(child: _AlipayMiniMetric(label: 'B等效成交量', value: alipayVolumeText(signal.volumeBEquivalent))),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: _AlipayMiniMetric(label: '信号', value: signal.signalText, color: alipaySignalColor(signal.score))),
+            Expanded(child: _AlipayMiniMetric(label: '贡献得分', value: signal.score.toStringAsFixed(1), color: alipaySignalColor(signal.score))),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _AlipayMiniMetric extends StatelessWidget {
+  const _AlipayMiniMetric({required this.label, required this.value, this.color});
+
+  final String label;
+  final String value;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.softGrey,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 11, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          Text(value, style: TextStyle(color: color ?? AppColors.ink, fontWeight: FontWeight.w900)),
+        ],
+      ),
+    );
+  }
+}
+
+class AlipayHoldingsTailSection extends StatelessWidget {
+  const AlipayHoldingsTailSection({super.key, required this.analysis});
+
+  final AlipayFundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('前十大重仓股尾盘详情', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          if (analysis.holdings.isEmpty)
+            const Text('东方财富接口暂未返回股票持仓。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800))
+          else
+            ...analysis.holdings.map((holding) {
+              final signal = analysis.tailSignals.firstWhere(
+                (item) => item.code == holding.code,
+                orElse: () => AlipayTailSignal.fromHolding(holding, ready: false),
+              );
+              return _AlipayHoldingTailTile(holding: holding, signal: signal);
+            }),
+          const Divider(height: 22),
+          Text(
+            '重仓股加权总分 ${analysis.tailScorePct.toStringAsFixed(1)}%，折算得分 ${analysis.holdingsScore.toStringAsFixed(1)}，方向：${analysis.tailScorePct > 15 ? '偏多' : analysis.tailScorePct < -15 ? '偏空' : '不判断'}',
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlipayHoldingTailTile extends StatelessWidget {
+  const _AlipayHoldingTailTile({required this.holding, required this.signal});
+
+  final AlipayHolding holding;
+  final AlipayTailSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text('${holding.name} ${holding.code}', style: const TextStyle(fontWeight: FontWeight.w900))),
+              Text('占 ${holding.weightPct.toStringAsFixed(2)}%', style: const TextStyle(fontWeight: FontWeight.w900)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: (holding.weightPct / 15).clamp(0.0, 1.0).toDouble(),
+              minHeight: 6,
+              backgroundColor: AppColors.softGrey,
+              valueColor: AlwaysStoppedAnimation(alipaySignalColor(signal.scorePct)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _AlipayChip('涨跌 ${signal.priceDeltaPct == null ? '--' : pct(signal.priceDeltaPct!)}'),
+              _AlipayChip('A量 ${alipayVolumeText(signal.volumeA)}'),
+              _AlipayChip('B等效 ${alipayVolumeText(signal.volumeBEquivalent)}'),
+              _AlipayChip('量比 ${signal.volumeRatio == null ? '--' : signal.volumeRatio!.toStringAsFixed(2)}'),
+              _AlipayChip(signal.signalText, color: alipaySignalColor(signal.scorePct)),
+              _AlipayChip('贡献 ${signal.scorePct.toStringAsFixed(1)}', color: alipaySignalColor(signal.scorePct)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlipayChip extends StatelessWidget {
+  const _AlipayChip(this.text, {this.color});
+
+  final String text;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: (color ?? AppColors.muted).withOpacity(0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: (color ?? AppColors.line).withOpacity(0.35)),
+      ),
+      child: Text(text, style: TextStyle(color: color ?? AppColors.ink, fontSize: 12, fontWeight: FontWeight.w900)),
+    );
+  }
+}
+
+class AlipaySectorEtfSection extends StatelessWidget {
+  const AlipaySectorEtfSection({super.key, required this.analysis});
+
+  final AlipayFundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('同板块ETF联动', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          if (analysis.sectorEtfSignals.isEmpty)
+            const Text('暂未配置同板块 ETF。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800))
+          else
+            ...analysis.sectorEtfSignals.map((signal) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(signal.name, style: const TextStyle(fontWeight: FontWeight.w900)),
+                      const SizedBox(height: 8),
+                      _AlipaySignalGrid(signal: signal),
+                    ],
+                  ),
+                )),
+        ],
+      ),
+    );
+  }
+}
+
+class AlipayFilterSection extends StatelessWidget {
+  const AlipayFilterSection({super.key, required this.analysis});
+
+  final AlipayFundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('辅助过滤指标', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          ...analysis.filterSignals.map((item) => _AlipayFilterRow(item: item)),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlipayFilterRow extends StatelessWidget {
+  const _AlipayFilterRow({required this.item});
+
+  final AlipayFilterSignal item;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = item.degraded ? AppColors.green : AppColors.muted;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 88, child: Text(item.title, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w900))),
+          Expanded(child: Text('${item.value} · ${item.status}', style: TextStyle(color: color, height: 1.35, fontWeight: FontWeight.w800))),
+        ],
+      ),
+    );
+  }
+}
+
+class AlipayLogicSection extends StatelessWidget {
+  const AlipayLogicSection({super.key, required this.analysis});
+
+  final AlipayFundAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('判断逻辑说明', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          _AlipayLogicLine('第一层 跟踪指数', '${analysis.indexScore.toStringAsFixed(1)} 分'),
+          _AlipayLogicLine('第二层 重仓股加权', '${analysis.holdingsScore.toStringAsFixed(1)} 分'),
+          _AlipayLogicLine('第三层 ETF联动', '${analysis.sectorEtfScore.toStringAsFixed(1)} 分'),
+          _AlipayLogicLine('原始总分', '${analysis.rawScore.toStringAsFixed(1)} → 初步判断：${alipayDirectionName(analysis.initialDirection)}'),
+          ...analysis.filterSignals.map((item) => _AlipayLogicLine(item.title, item.degraded ? '降级' : item.status)),
+          _AlipayLogicLine('最终结论', analysis.predictionLabel),
+          _AlipayLogicLine('置信度', analysis.confidence),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlipayLogicLine extends StatelessWidget {
+  const _AlipayLogicLine(this.label, this.value);
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 120, child: Text(label, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w900))),
+          Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w900, height: 1.35))),
+        ],
+      ),
+    );
+  }
+}
+
+class AlipayPredictionHistoryCard extends StatefulWidget {
+  const AlipayPredictionHistoryCard({super.key, required this.analysis});
+
+  final AlipayFundAnalysis analysis;
+
+  @override
+  State<AlipayPredictionHistoryCard> createState() => _AlipayPredictionHistoryCardState();
+}
+
+class _AlipayPredictionHistoryCardState extends State<AlipayPredictionHistoryCard> {
+  List<AlipayPredictionRecord> _records = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    await saveAlipayPredictionSnapshot(widget.analysis);
+    final rows = await loadAlipayPredictionRecords(widget.analysis.code);
+    if (mounted) setState(() => _records = rows);
+  }
+
+  Future<void> _inputActual() async {
+    final target = _records.firstOrNull;
+    if (target == null) return;
+    final value = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const AlipayActualInputSheet(),
+    );
+    if (value == null) return;
+    await updateAlipayPredictionActual(widget.analysis.code, target.date, value);
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = _records.length;
+    final hit = _records.where((item) => item.hit == true).length;
+    final high = _records.where((item) => item.confidence == '高' && item.hit != null).toList();
+    final mid = _records.where((item) => item.confidence == '中' && item.hit != null).toList();
+    return CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('历史预判记录', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+              TextButton(onPressed: _inputActual, child: const Text('录入实际')),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (_records.isEmpty)
+            const Text('暂无记录。', style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w800))
+          else ...[
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  SizedBox(width: 76, child: Text('日期', style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w900))),
+                  Expanded(child: Text('预判', style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w900))),
+                  Text('实际', style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w900)),
+                  SizedBox(width: 40),
+                ],
+              ),
+            ),
+            ..._records.take(10).map((item) => _AlipayHistoryRow(record: item)),
+          ],
+          const Divider(height: 22),
+          Text(
+            '总预判 $total 次 · 命中 $hit 次 · 总命中率 ${rateText(hit, total)} · 高置信 ${rateText(high.where((e) => e.hit == true).length, high.length)} · 中置信 ${rateText(mid.where((e) => e.hit == true).length, mid.length)}',
+            style: const TextStyle(color: AppColors.muted, height: 1.4, fontSize: 12, fontWeight: FontWeight.w800),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlipayHistoryRow extends StatelessWidget {
+  const _AlipayHistoryRow({required this.record});
+
+  final AlipayPredictionRecord record;
+
+  @override
+  Widget build(BuildContext context) {
+    final hitText = record.hit == null ? '待录入' : record.hit! ? '✓' : '✗';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 9),
+      child: Row(
+        children: [
+          SizedBox(width: 76, child: Text(record.date, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800))),
+          Expanded(child: Text('${alipayDirectionName(record.predictedDirection)} · ${record.confidence}', style: const TextStyle(fontWeight: FontWeight.w900))),
+          Text(record.actualPct == null ? '--' : pct(record.actualPct!), style: const TextStyle(fontWeight: FontWeight.w900)),
+          const SizedBox(width: 12),
+          Text(hitText, style: TextStyle(color: record.hit == false ? AppColors.green : AppColors.red, fontWeight: FontWeight.w900)),
+        ],
+      ),
+    );
+  }
+}
+
+class AlipayActualInputSheet extends StatefulWidget {
+  const AlipayActualInputSheet({super.key});
+
+  @override
+  State<AlipayActualInputSheet> createState() => _AlipayActualInputSheetState();
+}
+
+class _AlipayActualInputSheetState extends State<AlipayActualInputSheet> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = double.tryParse(_controller.text.trim().replaceAll('%', ''));
+    if (value == null) return;
+    Navigator.pop(context, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottom),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+        decoration: const BoxDecoration(
+          color: AppColors.bg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('录入实际次日涨跌幅', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+            const SizedBox(height: 12),
+            CupertinoTextField(
+              controller: _controller,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+              placeholder: '例如 -0.72 或 1.35',
+              padding: const EdgeInsets.all(15),
+              decoration: inputDecoration(),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(width: double.infinity, child: FilledButton(onPressed: _submit, child: const Text('保存'))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class AlipayFundService {
+  AlipayFundService({http.Client? client}) : _client = client ?? http.Client();
+
+  final http.Client _client;
+
+  Future<String> loadUsSnapshotForNotification() => _loadUsSnapshot();
+
+  Future<AlipayFundAnalysis> load(String code) async {
+    if (!RegExp(r'^\d{6}$').hasMatch(code)) {
+      throw '基金代码必须是 6 位数字';
+    }
+    final estimate = await _loadEstimate(code);
+    final position = await _loadPosition(code);
+    final etf = position.etfCode.isEmpty ? null : await _loadEtfSnapshot(position.etfCode);
+    final indexSignal = await _loadIndexSignal(position.indexCode, position.indexName);
+    final tailSignals = await Future.wait(position.holdings.take(10).map(_loadTailSignal));
+    final tailReady = tailSignals.where((item) => item.ready).toList();
+    final tailWeightedPct = tailSignals.fold<double>(0, (sum, item) => sum + item.scorePct);
+    final holdingScore = tailWeightedPct * 0.4;
+    final readyWeight = tailReady.fold<double>(0, (sum, item) => sum + item.weightPct);
+    final sectorEtfSignals = await Future.wait(knownAlipaySectorEtfs(position.etfCode).take(3).map(_loadSectorEtfSignal));
+    final sectorEtfScore = sectorEtfSignals.isEmpty
+        ? 0.0
+        : sectorEtfSignals.fold<double>(0, (sum, item) => sum + item.score) / sectorEtfSignals.length;
+    final rawScore = indexSignal.score + holdingScore + sectorEtfScore;
+    final market = await _loadMarketSnapshot();
+    final northbound = await _loadNorthboundSnapshot();
+    final us = await _loadUsSnapshot();
+    final initialDirection = rawScore > 20
+        ? 1
+        : rawScore < -20
+            ? -1
+            : 0;
+    final filterSignals = _buildFilterSignals(
+      initialDirection: initialDirection,
+      etf: etf,
+      market: market,
+      northbound: northbound,
+      us: us,
+    );
+    final downgraded = filterSignals.any((item) => item.degraded);
+    final direction = downgraded ? 0 : initialDirection;
+    final confidence = downgraded
+        ? '低'
+        : indexSignal.ready && readyWeight >= 30 && sectorEtfSignals.any((item) => item.ready)
+        ? '高'
+        : indexSignal.ready || readyWeight >= 15
+            ? '中'
+            : '低';
+    final reason = _buildAlipayReason(
+      direction: direction,
+      rawScore: rawScore,
+      indexScore: indexSignal.score,
+      holdingScore: holdingScore,
+      sectorEtfScore: sectorEtfScore,
+      indexSignalText: indexSignal.summary,
+      sectorEtfSignalText: sectorEtfSignals.isEmpty
+          ? '同板块 ETF 未配置或接口暂未返回，板块联动按 0 分处理。'
+          : sectorEtfSignals.map((item) => item.summary).join('；'),
+      tailWeightedPct: tailWeightedPct,
+      readyWeight: readyWeight,
+      tailSignals: tailSignals,
+    );
+    final analysis = AlipayFundAnalysis(
+      code: code,
+      name: estimate.name,
+      fundType: inferAlipayFundType(estimate.name),
+      latestNav: estimate.latestNav,
+      todayPct: estimate.todayPct,
+      navDate: estimate.navDate,
+      updateTime: estimate.updateTime,
+      targetIndexCode: position.indexCode,
+      targetIndexName: position.indexName,
+      etfCode: position.etfCode,
+      etfName: position.etfName,
+      holdings: position.holdings,
+      indexSignal: indexSignal,
+      tailSignals: tailSignals,
+      sectorEtfSignals: sectorEtfSignals,
+      tailScorePct: tailWeightedPct,
+      tailReadyWeightPct: readyWeight,
+      indexScore: indexSignal.score,
+      holdingsScore: holdingScore,
+      sectorEtfScore: sectorEtfScore,
+      rawScore: rawScore,
+      indexSignalText: indexSignal.summary,
+      sectorEtfSignalText: sectorEtfSignals.map((item) => item.summary).join('；'),
+      predictionDirection: direction,
+      initialDirection: initialDirection,
+      confidence: confidence,
+      predictionReason: reason,
+      filterSignals: filterSignals,
+      etfSnapshot: etf,
+      marketSummary: market,
+      northboundSummary: northbound,
+      usSummary: us,
+      updatedAt: minuteText(DateTime.now()),
+    );
+    await saveAlipayPredictionSnapshot(analysis);
+    return analysis;
+  }
+
+  Future<_AlipayEstimate> _loadEstimate(String code) async {
+    final uri = Uri.parse('http://fundgz.1234567.com.cn/js/$code.js?rt=${DateTime.now().millisecondsSinceEpoch}');
+    final response = await _client
+        .get(uri, headers: noCacheHeaders(const {'Referer': 'http://fund.eastmoney.com/'}))
+        .timeout(const Duration(seconds: 12));
+    if (response.statusCode != 200) throw '基金实时估值接口异常';
+    final body = utf8.decode(response.bodyBytes);
+    final start = body.indexOf('{');
+    final end = body.lastIndexOf('}');
+    if (start < 0 || end <= start) throw '基金实时估值解析失败';
+    final payload = jsonDecode(body.substring(start, end + 1)) as Map<String, dynamic>;
+    final name = (payload['name'] ?? '基金 $code').toString();
+    final latestNav = toNullableDouble(payload['gsz']) ?? toNullableDouble(payload['dwjz']) ?? 0;
+    final todayPct = toNullableDouble(payload['gszzl']) ?? 0;
+    return _AlipayEstimate(
+      name: name,
+      latestNav: latestNav,
+      todayPct: todayPct,
+      navDate: (payload['jzrq'] ?? '').toString(),
+      updateTime: (payload['gztime'] ?? '').toString(),
+    );
+  }
+
+  Future<_AlipayPosition> _loadPosition(String code, {bool allowEtfLookup = true}) async {
+    final uri = Uri.parse(
+      'https://fundmobapi.eastmoney.com/FundMNewApi/FundMNInverstPosition?FCODE=$code&deviceid=xxx&version=6.3.8&product=EFund&plat=Iphone',
+    );
+    final response = await _client
+        .get(uri, headers: noCacheHeaders(const {'Referer': 'https://fundmobapi.eastmoney.com/'}))
+        .timeout(const Duration(seconds: 18));
+    if (response.statusCode != 200) throw '基金持仓接口异常';
+    final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    final datas = payload['Datas'] as Map<String, dynamic>? ?? {};
+    final etfCode = (datas['ETFCODE'] ?? '').toString();
+    final etfName = (datas['ETFSHORTNAME'] ?? '').toString();
+    final stocks = (datas['fundStocks'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().map((row) {
+      return AlipayHolding(
+        code: (row['GPDM'] ?? '').toString(),
+        name: (row['GPJC'] ?? '').toString(),
+        weightPct: toNullableDouble(row['JZBL']) ?? 0,
+        industry: (row['INDEXNAME'] ?? '').toString(),
+      );
+    }).where((item) => item.code.isNotEmpty && item.name.isNotEmpty && item.weightPct > 0).toList();
+    if (stocks.isEmpty && allowEtfLookup && etfCode.isNotEmpty && etfCode != code) {
+      final target = await _loadPosition(etfCode, allowEtfLookup: false);
+      final known = knownAlipayEtfIndex(etfCode);
+      return target.copyWith(
+        etfCode: etfCode,
+        etfName: etfName,
+        indexCode: known?.code ?? target.indexCode,
+        indexName: known?.name ?? target.indexName,
+      );
+    }
+    final known = knownAlipayEtfIndex(code) ?? knownAlipayEtfIndex(etfCode);
+    return _AlipayPosition(
+      etfCode: etfCode,
+      etfName: etfName,
+      indexCode: known?.code ?? '',
+      indexName: known?.name ?? '',
+      holdings: stocks,
+    );
+  }
+
+  Future<AlipayEtfSnapshot?> _loadEtfSnapshot(String code) async {
+    final uri = Uri.parse(
+      'https://push2.eastmoney.com/api/qt/stock/get?secid=${marketFromCode(code)}.$code&fields=f43,f116,f117,f170&rt=${DateTime.now().millisecondsSinceEpoch}',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://quote.eastmoney.com/'})).timeout(const Duration(seconds: 10));
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final data = payload['data'] as Map<String, dynamic>? ?? {};
+      final premium = await _loadEtfPremiumRatio(code);
+      return AlipayEtfSnapshot(
+        code: code,
+        price: normalizeEastmoneyPrice(toNullableDouble(data['f43'])),
+        changePct: normalizeEastmoneyPct(toNullableDouble(data['f170'])),
+        premiumDiscountRatio: premium,
+        field116: toNullableDouble(data['f116']),
+        field117: toNullableDouble(data['f117']),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<double?> _loadEtfPremiumRatio(String code) async {
+    final uri = Uri.parse(
+      'https://datacenter.eastmoney.com/stock/fundselector/api/data/get?type=RPTA_APP_FUNDSELECT&sty=SECURITY_CODE,PREMIUM_DISCOUNT_RATIO&source=FUND_SELECTOR&client=APP&filter=(SECURITY_CODE%3D%22$code%22)&p=1&ps=1&isIndexFilter=1',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://datacenter.eastmoney.com/'})).timeout(const Duration(seconds: 8));
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final rows = ((payload['result'] as Map<String, dynamic>?)?['data'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
+      final row = rows.firstOrNull;
+      return row == null ? null : toNullableDouble(row['PREMIUM_DISCOUNT_RATIO']);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<AlipayTailSignal> _loadTailSignal(AlipayHolding holding) async {
+    final signal = await _loadTimedSignal(
+      secid: '${marketFromCode(holding.code)}.${holding.code}',
+      name: holding.name,
+      upScore: holding.weightPct,
+      downScore: -holding.weightPct,
+    );
+    return AlipayTailSignal(
+      code: holding.code,
+      name: holding.name,
+      weightPct: holding.weightPct,
+      ready: signal.ready,
+      priceDeltaPct: signal.priceDeltaPct,
+      volumeA: signal.volumeA,
+      volumeBEquivalent: signal.volumeBEquivalent,
+      volumeRatio: signal.volumeRatio,
+      scorePct: signal.score,
+    );
+  }
+
+  Future<AlipayTimedSignal> _loadIndexSignal(String indexCode, String indexName) async {
+    final secid = alipayIndexSecid(indexCode);
+    if (secid == null) {
+      return AlipayTimedSignal.empty(indexName.isEmpty ? '跟踪指数' : indexName, '跟踪指数代码暂未确认，指数层按 0 分处理。');
+    }
+    return _loadTimedSignal(
+      secid: secid,
+      name: indexName.isEmpty ? indexCode : indexName,
+      upScore: 60,
+      downScore: -60,
+    );
+  }
+
+  Future<AlipayTimedSignal> _loadSectorEtfSignal(String code) {
+    return _loadTimedSignal(
+      secid: '${marketFromCode(code)}.$code',
+      name: 'ETF $code',
+      upScore: 5,
+      downScore: -5,
+    );
+  }
+
+  Future<AlipayTimedSignal> _loadTimedSignal({
+    required String secid,
+    required String name,
+    required double upScore,
+    required double downScore,
+  }) async {
+    final uri = Uri.parse(
+      'https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=$secid&fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56,f57,f58&rt=${DateTime.now().millisecondsSinceEpoch}',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://quote.eastmoney.com/'})).timeout(const Duration(seconds: 10));
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final trends = ((payload['data'] as Map<String, dynamic>?)?['trends'] as List<dynamic>? ?? []).map((item) => item.toString()).toList();
+      final points = trends.map(parseAlipayTrendPoint).whereType<_AlipayTrendPoint>().toList();
+      final windowA = points.where((item) => item.minute >= 14 * 60 + 40 && item.minute < 14 * 60 + 50).toList();
+      final windowB = points.where((item) => item.minute >= 14 * 60 + 50 && item.minute <= 14 * 60 + 58).toList();
+      if (windowA.isEmpty || windowB.length < 2) {
+        return AlipayTimedSignal.empty(name, '$name 没拿到 14:40-14:58 的完整分钟数据，按 0 分处理。');
+      }
+      final volumeA = windowA.fold<double>(0, (sum, item) => sum + item.volume);
+      final volumeB = windowB.fold<double>(0, (sum, item) => sum + item.volume) * 1.25;
+      if (volumeA <= 0) return AlipayTimedSignal.empty(name, '$name 区间A成交量为 0，按 0 分处理。');
+      final volumeRatio = volumeB / volumeA;
+      final deltaPct = (windowB.last.price / max(0.0001, windowB.first.price) - 1) * 100;
+      final validVolume = volumeRatio >= 1.5;
+      final score = validVolume
+          ? deltaPct > 0
+              ? upScore
+              : deltaPct < 0
+                  ? downScore
+                  : 0.0
+          : 0.0;
+      final directionText = !validVolume
+          ? '缩量无效'
+          : deltaPct > 0
+              ? '放量上涨'
+              : deltaPct < 0
+                  ? '放量下跌'
+                  : '放量但方向不明';
+      return AlipayTimedSignal(
+        name: name,
+        ready: true,
+        priceDeltaPct: deltaPct,
+        volumeA: volumeA,
+        volumeBEquivalent: volumeB,
+        volumeRatio: volumeRatio,
+        score: score,
+        summary:
+            '$name $directionText，量比 ${volumeRatio.toStringAsFixed(2)}，14:50-14:58 涨跌 ${pct(deltaPct)}，得分 ${score.toStringAsFixed(1)}。',
+      );
+    } catch (_) {
+      return AlipayTimedSignal.empty(name, '$name 分钟数据接口暂未返回，按 0 分处理。');
+    }
+  }
+
+  Future<String> _loadMarketSnapshot() async {
+    final rows = await Future.wait([
+      _loadQuoteSummary('1.000300', '沪深300'),
+      _loadQuoteSummary('0.399006', '创业板指'),
+      _loadQuoteSummary('1.000001', '上证指数'),
+    ]);
+    return rows.where((item) => item.isNotEmpty).join('；');
+  }
+
+  Future<String> _loadUsSnapshot() async {
+    final rows = await Future.wait([
+      _loadQuoteSummary('100.NDX', '纳斯达克'),
+      _loadQuoteSummary('100.SPX', '标普500'),
+    ]);
+    return rows.where((item) => item.isNotEmpty).join('；');
+  }
+
+  Future<String> _loadQuoteSummary(String secid, String name) async {
+    final uri = Uri.parse('https://push2.eastmoney.com/api/qt/stock/get?secid=$secid&fields=f43,f170,f171&rt=${DateTime.now().millisecondsSinceEpoch}');
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://quote.eastmoney.com/'})).timeout(const Duration(seconds: 8));
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final data = payload['data'] as Map<String, dynamic>? ?? {};
+      final change = normalizeEastmoneyPct(toNullableDouble(data['f170']));
+      if (change == null) return '';
+      return '$name ${pct(change)}';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<String> _loadNorthboundSnapshot() async {
+    final uri = Uri.parse(
+      'https://push2.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55&rt=${DateTime.now().millisecondsSinceEpoch}',
+    );
+    try {
+      final response = await _client.get(uri, headers: noCacheHeaders(const {'Referer': 'https://quote.eastmoney.com/'})).timeout(const Duration(seconds: 8));
+      final payload = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final data = payload['data'] as Map<String, dynamic>? ?? {};
+      final rows = (data['s2n'] as List<dynamic>? ?? []).map((item) => item.toString()).toList();
+      final last = rows.lastWhere((row) => row.split(',').length >= 3, orElse: () => '');
+      if (last.isEmpty) return '';
+      final parts = last.split(',');
+      final amount = toNullableDouble(parts[2]);
+      if (amount == null) return '';
+      return '北向资金 ${parts[0]} 数据 ${compactMoney(amount)}';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  List<AlipayFilterSignal> _buildFilterSignals({
+    required int initialDirection,
+    required AlipayEtfSnapshot? etf,
+    required String market,
+    required String northbound,
+    required String us,
+  }) {
+    final etfPremium = etf?.premiumDiscountRatio;
+    final etfDowngrade = initialDirection > 0 && etfPremium != null && etfPremium >= 1;
+    String marketPart(String name) {
+      final match = market
+          .split('；')
+          .where((item) => item.startsWith(name))
+          .firstOrNull;
+      return match?.trim() ?? '';
+    }
+
+    final hs300 = marketPart('沪深300');
+    final chinext = marketPart('创业板指');
+    final marketDowngrade = initialDirection > 0 && hs300.contains('-') && chinext.contains('-');
+    return [
+      AlipayFilterSignal(
+        title: 'ETF折溢价',
+        value: etfPremium == null ? '真实接口未返回折溢价' : pct(etfPremium),
+        status: etfDowngrade ? '溢价偏高，偏多降级' : '通过',
+        degraded: etfDowngrade,
+      ),
+      AlipayFilterSignal(
+        title: '北向资金',
+        value: northbound.isEmpty ? '接口暂未返回' : northbound,
+        status: '通过',
+        degraded: false,
+      ),
+      AlipayFilterSignal(
+        title: '沪深300',
+        value: hs300.isEmpty ? '接口暂未返回' : hs300,
+        status: marketDowngrade ? '与创业板同步走弱，偏多降级' : '通过',
+        degraded: marketDowngrade,
+      ),
+      AlipayFilterSignal(
+        title: '创业板',
+        value: chinext.isEmpty ? '接口暂未返回' : chinext,
+        status: marketDowngrade ? '与沪深300同步走弱，偏多降级' : '通过',
+        degraded: marketDowngrade,
+      ),
+      AlipayFilterSignal(
+        title: '美股昨夜',
+        value: us.isEmpty ? '接口暂未返回' : us,
+        status: '仅辅助观察',
+        degraded: false,
+      ),
+    ];
+  }
+
+  String _buildAlipayReason({
+    required int direction,
+    required double rawScore,
+    required double indexScore,
+    required double holdingScore,
+    required double sectorEtfScore,
+    required String indexSignalText,
+    required String sectorEtfSignalText,
+    required double tailWeightedPct,
+    required double readyWeight,
+    required List<AlipayTailSignal> tailSignals,
+  }) {
+    final active = tailSignals.where((item) => item.ready && item.scorePct != 0).toList();
+    final topText = active.isEmpty
+        ? '前十大持仓里，14:50-14:58 没有形成“放量+同方向”的有效信号。'
+        : active
+            .map((item) => '${item.name}${item.scorePct > 0 ? '放量拉升' : '放量走弱'}，权重${item.weightPct.toStringAsFixed(1)}%')
+            .take(3)
+            .join('；');
+    final directionText = direction > 0
+        ? '14:58 原始总分 ${rawScore.toStringAsFixed(1)}，超过 +20，明日初步偏多。'
+        : direction < 0
+            ? '14:58 原始总分 ${rawScore.toStringAsFixed(1)}，低于 -20，明日初步偏空。'
+            : '14:58 原始总分 ${rawScore.toStringAsFixed(1)}，在 -20 到 +20 内，今天不强行判断。';
+    return '$directionText 指数层 ${indexScore.toStringAsFixed(1)} 分：$indexSignalText 持仓层 ${holdingScore.toStringAsFixed(1)} 分：重仓股加权净信号 ${tailWeightedPct.toStringAsFixed(1)}%，$topText，有效权重 ${readyWeight.toStringAsFixed(1)}%。ETF联动 ${sectorEtfScore.toStringAsFixed(1)} 分：$sectorEtfSignalText';
+  }
+}
+
+class _AlipayEstimate {
+  const _AlipayEstimate({
+    required this.name,
+    required this.latestNav,
+    required this.todayPct,
+    required this.navDate,
+    required this.updateTime,
+  });
+
+  final String name;
+  final double latestNav;
+  final double todayPct;
+  final String navDate;
+  final String updateTime;
+}
+
+class _AlipayPosition {
+  const _AlipayPosition({
+    required this.etfCode,
+    required this.etfName,
+    required this.indexCode,
+    required this.indexName,
+    required this.holdings,
+  });
+
+  final String etfCode;
+  final String etfName;
+  final String indexCode;
+  final String indexName;
+  final List<AlipayHolding> holdings;
+
+  _AlipayPosition copyWith({
+    String? etfCode,
+    String? etfName,
+    String? indexCode,
+    String? indexName,
+    List<AlipayHolding>? holdings,
+  }) {
+    return _AlipayPosition(
+      etfCode: etfCode ?? this.etfCode,
+      etfName: etfName ?? this.etfName,
+      indexCode: indexCode ?? this.indexCode,
+      indexName: indexName ?? this.indexName,
+      holdings: holdings ?? this.holdings,
+    );
+  }
+}
+
+class AlipayFundAnalysis {
+  const AlipayFundAnalysis({
+    required this.code,
+    required this.name,
+    required this.fundType,
+    required this.latestNav,
+    required this.todayPct,
+    required this.navDate,
+    required this.updateTime,
+    required this.targetIndexCode,
+    required this.targetIndexName,
+    required this.etfCode,
+    required this.etfName,
+    required this.holdings,
+    required this.indexSignal,
+    required this.tailSignals,
+    required this.sectorEtfSignals,
+    required this.tailScorePct,
+    required this.tailReadyWeightPct,
+    required this.indexScore,
+    required this.holdingsScore,
+    required this.sectorEtfScore,
+    required this.rawScore,
+    required this.indexSignalText,
+    required this.sectorEtfSignalText,
+    required this.predictionDirection,
+    required this.initialDirection,
+    required this.confidence,
+    required this.predictionReason,
+    required this.filterSignals,
+    required this.etfSnapshot,
+    required this.marketSummary,
+    required this.northboundSummary,
+    required this.usSummary,
+    required this.updatedAt,
+  });
+
+  final String code;
+  final String name;
+  final String fundType;
+  final double latestNav;
+  final double todayPct;
+  final String navDate;
+  final String updateTime;
+  final String targetIndexCode;
+  final String targetIndexName;
+  final String etfCode;
+  final String etfName;
+  final List<AlipayHolding> holdings;
+  final AlipayTimedSignal indexSignal;
+  final List<AlipayTailSignal> tailSignals;
+  final List<AlipayTimedSignal> sectorEtfSignals;
+  final double tailScorePct;
+  final double tailReadyWeightPct;
+  final double indexScore;
+  final double holdingsScore;
+  final double sectorEtfScore;
+  final double rawScore;
+  final String indexSignalText;
+  final String sectorEtfSignalText;
+  final int predictionDirection;
+  final int initialDirection;
+  final String confidence;
+  final String predictionReason;
+  final List<AlipayFilterSignal> filterSignals;
+  final AlipayEtfSnapshot? etfSnapshot;
+  final String marketSummary;
+  final String northboundSummary;
+  final String usSummary;
+  final String updatedAt;
+
+  String get latestNavText => latestNav <= 0 ? '待更新' : latestNav.toStringAsFixed(4);
+  String get predictionLabel => predictionDirection > 0
+      ? '🔴偏多'
+      : predictionDirection < 0
+          ? '🟢偏空'
+          : '⚪不判断';
+  Color get predictionColor => predictionDirection > 0
+      ? AppColors.red
+      : predictionDirection < 0
+          ? AppColors.green
+          : AppColors.muted;
+  String get indexNameText {
+    if (targetIndexCode.isEmpty && targetIndexName.isEmpty) return '待确认';
+    if (targetIndexCode.isEmpty) return targetIndexName;
+    if (targetIndexName.isEmpty) return targetIndexCode;
+    return '$targetIndexName $targetIndexCode';
+  }
+
+  String get etfText {
+    if (etfCode.isEmpty && etfName.isEmpty) return '待确认';
+    if (etfCode.isEmpty) return etfName;
+    if (etfName.isEmpty) return etfCode;
+    return '$etfName $etfCode';
+  }
+
+  String get dataSummary {
+    final rows = [
+      if (marketSummary.isNotEmpty) '大盘：$marketSummary',
+      if (usSummary.isNotEmpty) '美股：$usSummary',
+      if (northboundSummary.isNotEmpty) northboundSummary,
+      if (etfSnapshot != null) 'ETF：${etfSnapshot!.changeText}，${etfSnapshot!.priceText}',
+    ];
+    return rows.join('；');
+  }
+
+  Map<String, dynamic> toJson() => {
+        'code': code,
+        'name': name,
+        'fundType': fundType,
+        'latestNav': latestNav,
+        'todayPct': todayPct,
+        'navDate': navDate,
+        'updateTime': updateTime,
+        'targetIndexCode': targetIndexCode,
+        'targetIndexName': targetIndexName,
+        'etfCode': etfCode,
+        'etfName': etfName,
+        'holdings': holdings.map((item) => item.toJson()).toList(),
+        'indexSignal': indexSignal.toJson(),
+        'tailSignals': tailSignals.map((item) => item.toJson()).toList(),
+        'sectorEtfSignals': sectorEtfSignals.map((item) => item.toJson()).toList(),
+        'tailScorePct': tailScorePct,
+        'tailReadyWeightPct': tailReadyWeightPct,
+        'indexScore': indexScore,
+        'holdingsScore': holdingsScore,
+        'sectorEtfScore': sectorEtfScore,
+        'rawScore': rawScore,
+        'indexSignalText': indexSignalText,
+        'sectorEtfSignalText': sectorEtfSignalText,
+        'predictionDirection': predictionDirection,
+        'initialDirection': initialDirection,
+        'confidence': confidence,
+        'predictionReason': predictionReason,
+        'filterSignals': filterSignals.map((item) => item.toJson()).toList(),
+        'etfSnapshot': etfSnapshot?.toJson(),
+        'marketSummary': marketSummary,
+        'northboundSummary': northboundSummary,
+        'usSummary': usSummary,
+        'updatedAt': updatedAt,
+      };
+
+  factory AlipayFundAnalysis.fromJson(Map<String, dynamic> json) => AlipayFundAnalysis(
+        code: (json['code'] ?? '').toString(),
+        name: (json['name'] ?? '').toString(),
+        fundType: (json['fundType'] ?? '').toString(),
+        latestNav: toNullableDouble(json['latestNav']) ?? 0,
+        todayPct: toNullableDouble(json['todayPct']) ?? 0,
+        navDate: (json['navDate'] ?? '').toString(),
+        updateTime: (json['updateTime'] ?? '').toString(),
+        targetIndexCode: (json['targetIndexCode'] ?? '').toString(),
+        targetIndexName: (json['targetIndexName'] ?? '').toString(),
+        etfCode: (json['etfCode'] ?? '').toString(),
+        etfName: (json['etfName'] ?? '').toString(),
+        holdings: ((json['holdings'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(AlipayHolding.fromJson).toList(),
+        indexSignal: json['indexSignal'] is Map<String, dynamic>
+            ? AlipayTimedSignal.fromJson(json['indexSignal'] as Map<String, dynamic>)
+            : AlipayTimedSignal.empty('跟踪指数', ''),
+        tailSignals: ((json['tailSignals'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(AlipayTailSignal.fromJson).toList(),
+        sectorEtfSignals: ((json['sectorEtfSignals'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(AlipayTimedSignal.fromJson).toList(),
+        tailScorePct: toNullableDouble(json['tailScorePct']) ?? 0,
+        tailReadyWeightPct: toNullableDouble(json['tailReadyWeightPct']) ?? 0,
+        indexScore: toNullableDouble(json['indexScore']) ?? 0,
+        holdingsScore: toNullableDouble(json['holdingsScore']) ?? 0,
+        sectorEtfScore: toNullableDouble(json['sectorEtfScore']) ?? 0,
+        rawScore: toNullableDouble(json['rawScore']) ?? 0,
+        indexSignalText: (json['indexSignalText'] ?? '').toString(),
+        sectorEtfSignalText: (json['sectorEtfSignalText'] ?? '').toString(),
+        predictionDirection: (toNullableDouble(json['predictionDirection']) ?? 0).round(),
+        initialDirection: (toNullableDouble(json['initialDirection']) ?? toNullableDouble(json['predictionDirection']) ?? 0).round(),
+        confidence: (json['confidence'] ?? '低').toString(),
+        predictionReason: (json['predictionReason'] ?? '').toString(),
+        filterSignals: ((json['filterSignals'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(AlipayFilterSignal.fromJson).toList(),
+        etfSnapshot: json['etfSnapshot'] is Map<String, dynamic> ? AlipayEtfSnapshot.fromJson(json['etfSnapshot'] as Map<String, dynamic>) : null,
+        marketSummary: (json['marketSummary'] ?? '').toString(),
+        northboundSummary: (json['northboundSummary'] ?? '').toString(),
+        usSummary: (json['usSummary'] ?? '').toString(),
+        updatedAt: (json['updatedAt'] ?? '').toString(),
+      );
+}
+
+class AlipayHolding {
+  const AlipayHolding({
+    required this.code,
+    required this.name,
+    required this.weightPct,
+    required this.industry,
+  });
+
+  final String code;
+  final String name;
+  final double weightPct;
+  final String industry;
+
+  Map<String, dynamic> toJson() => {'code': code, 'name': name, 'weightPct': weightPct, 'industry': industry};
+
+  factory AlipayHolding.fromJson(Map<String, dynamic> json) => AlipayHolding(
+        code: (json['code'] ?? '').toString(),
+        name: (json['name'] ?? '').toString(),
+        weightPct: toNullableDouble(json['weightPct']) ?? 0,
+        industry: (json['industry'] ?? '').toString(),
+      );
+}
+
+class AlipayTailSignal {
+  const AlipayTailSignal({
+    required this.code,
+    required this.name,
+    required this.weightPct,
+    required this.ready,
+    required this.priceDeltaPct,
+    required this.volumeA,
+    required this.volumeBEquivalent,
+    required this.volumeRatio,
+    required this.scorePct,
+  });
+
+  final String code;
+  final String name;
+  final double weightPct;
+  final bool ready;
+  final double? priceDeltaPct;
+  final double? volumeA;
+  final double? volumeBEquivalent;
+  final double? volumeRatio;
+  final double scorePct;
+
+  String get signalText {
+    if (!ready || volumeRatio == null || volumeRatio! < 1.5) return '⚪缩量无效';
+    if ((priceDeltaPct ?? 0) > 0) return '🔴放量上涨';
+    if ((priceDeltaPct ?? 0) < 0) return '🟢放量下跌';
+    return '⚪方向不明';
+  }
+
+  factory AlipayTailSignal.fromHolding(AlipayHolding holding, {required bool ready}) => AlipayTailSignal(
+        code: holding.code,
+        name: holding.name,
+        weightPct: holding.weightPct,
+        ready: ready,
+        priceDeltaPct: null,
+        volumeA: null,
+        volumeBEquivalent: null,
+        volumeRatio: null,
+        scorePct: 0,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'code': code,
+        'name': name,
+        'weightPct': weightPct,
+        'ready': ready,
+        'priceDeltaPct': priceDeltaPct,
+        'volumeA': volumeA,
+        'volumeBEquivalent': volumeBEquivalent,
+        'volumeRatio': volumeRatio,
+        'scorePct': scorePct,
+      };
+
+  factory AlipayTailSignal.fromJson(Map<String, dynamic> json) => AlipayTailSignal(
+        code: (json['code'] ?? '').toString(),
+        name: (json['name'] ?? '').toString(),
+        weightPct: toNullableDouble(json['weightPct']) ?? 0,
+        ready: json['ready'] == true,
+        priceDeltaPct: toNullableDouble(json['priceDeltaPct']),
+        volumeA: toNullableDouble(json['volumeA']),
+        volumeBEquivalent: toNullableDouble(json['volumeBEquivalent']),
+        volumeRatio: toNullableDouble(json['volumeRatio']),
+        scorePct: toNullableDouble(json['scorePct']) ?? 0,
+      );
+}
+
+class AlipayTimedSignal {
+  const AlipayTimedSignal({
+    required this.name,
+    required this.ready,
+    required this.priceDeltaPct,
+    required this.volumeA,
+    required this.volumeBEquivalent,
+    required this.volumeRatio,
+    required this.score,
+    required this.summary,
+  });
+
+  final String name;
+  final bool ready;
+  final double? priceDeltaPct;
+  final double? volumeA;
+  final double? volumeBEquivalent;
+  final double? volumeRatio;
+  final double score;
+  final String summary;
+
+  String get signalText {
+    if (!ready || volumeRatio == null || volumeRatio! < 1.5) return '⚪缩量无效';
+    if ((priceDeltaPct ?? 0) > 0) return '🔴放量上涨';
+    if ((priceDeltaPct ?? 0) < 0) return '🟢放量下跌';
+    return '⚪方向不明';
+  }
+
+  factory AlipayTimedSignal.empty(String name, String summary) => AlipayTimedSignal(
+        name: name,
+        ready: false,
+        priceDeltaPct: null,
+        volumeA: null,
+        volumeBEquivalent: null,
+        volumeRatio: null,
+        score: 0,
+        summary: summary,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'ready': ready,
+        'priceDeltaPct': priceDeltaPct,
+        'volumeA': volumeA,
+        'volumeBEquivalent': volumeBEquivalent,
+        'volumeRatio': volumeRatio,
+        'score': score,
+        'summary': summary,
+      };
+
+  factory AlipayTimedSignal.fromJson(Map<String, dynamic> json) => AlipayTimedSignal(
+        name: (json['name'] ?? '').toString(),
+        ready: json['ready'] == true,
+        priceDeltaPct: toNullableDouble(json['priceDeltaPct']),
+        volumeA: toNullableDouble(json['volumeA']),
+        volumeBEquivalent: toNullableDouble(json['volumeBEquivalent']),
+        volumeRatio: toNullableDouble(json['volumeRatio']),
+        score: toNullableDouble(json['score']) ?? 0,
+        summary: (json['summary'] ?? '').toString(),
+      );
+}
+
+class AlipayFilterSignal {
+  const AlipayFilterSignal({
+    required this.title,
+    required this.value,
+    required this.status,
+    required this.degraded,
+  });
+
+  final String title;
+  final String value;
+  final String status;
+  final bool degraded;
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'value': value,
+        'status': status,
+        'degraded': degraded,
+      };
+
+  factory AlipayFilterSignal.fromJson(Map<String, dynamic> json) => AlipayFilterSignal(
+        title: (json['title'] ?? '').toString(),
+        value: (json['value'] ?? '').toString(),
+        status: (json['status'] ?? '').toString(),
+        degraded: json['degraded'] == true,
+      );
+}
+
+class AlipayEtfSnapshot {
+  const AlipayEtfSnapshot({
+    required this.code,
+    required this.price,
+    required this.changePct,
+    required this.premiumDiscountRatio,
+    required this.field116,
+    required this.field117,
+  });
+
+  final String code;
+  final double? price;
+  final double? changePct;
+  final double? premiumDiscountRatio;
+  final double? field116;
+  final double? field117;
+
+  String get priceText => price == null ? '价格待更新' : '价格 ${price!.toStringAsFixed(3)}';
+  String get changeText => changePct == null ? '涨跌待更新' : pct(changePct!);
+  String get premiumText => premiumDiscountRatio == null ? '折溢价待更新' : pct(premiumDiscountRatio!);
+
+  Map<String, dynamic> toJson() => {
+        'code': code,
+        'price': price,
+        'changePct': changePct,
+        'premiumDiscountRatio': premiumDiscountRatio,
+        'field116': field116,
+        'field117': field117,
+      };
+
+  factory AlipayEtfSnapshot.fromJson(Map<String, dynamic> json) => AlipayEtfSnapshot(
+        code: (json['code'] ?? '').toString(),
+        price: toNullableDouble(json['price']),
+        changePct: toNullableDouble(json['changePct']),
+        premiumDiscountRatio: toNullableDouble(json['premiumDiscountRatio']),
+        field116: toNullableDouble(json['field116']),
+        field117: toNullableDouble(json['field117']),
+      );
+}
+
+class AlipayPredictionRecord {
+  const AlipayPredictionRecord({
+    required this.date,
+    required this.predictedDirection,
+    required this.confidence,
+    required this.rawScore,
+    required this.updatedAt,
+    this.actualPct,
+    this.hit,
+  });
+
+  final String date;
+  final int predictedDirection;
+  final String confidence;
+  final double rawScore;
+  final String updatedAt;
+  final double? actualPct;
+  final bool? hit;
+
+  Map<String, dynamic> toJson() => {
+        'date': date,
+        'predictedDirection': predictedDirection,
+        'confidence': confidence,
+        'rawScore': rawScore,
+        'updatedAt': updatedAt,
+        'actualPct': actualPct,
+        'hit': hit,
+      };
+
+  factory AlipayPredictionRecord.fromJson(Map<String, dynamic> json) => AlipayPredictionRecord(
+        date: (json['date'] ?? '').toString(),
+        predictedDirection: (toNullableDouble(json['predictedDirection']) ?? 0).round(),
+        confidence: (json['confidence'] ?? '低').toString(),
+        rawScore: toNullableDouble(json['rawScore']) ?? 0,
+        updatedAt: (json['updatedAt'] ?? '').toString(),
+        actualPct: toNullableDouble(json['actualPct']),
+        hit: json['hit'] is bool ? json['hit'] as bool : null,
+      );
+}
+
+String alipayPredictionHistoryKey(String code) => 'alipay_prediction_history_$code';
+
+Future<List<AlipayPredictionRecord>> loadAlipayPredictionRecords(String code) async {
+  final prefs = await SharedPreferences.getInstance();
+  final raw = prefs.getString(alipayPredictionHistoryKey(code));
+  if (raw == null || raw.isEmpty) return [];
+  try {
+    final rows = (jsonDecode(raw) as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .map(AlipayPredictionRecord.fromJson)
+        .where((item) => item.date.isNotEmpty)
+        .toList();
+    rows.sort((a, b) => b.date.compareTo(a.date));
+    return rows;
+  } catch (_) {
+    return [];
+  }
+}
+
+Future<void> saveAlipayPredictionSnapshot(AlipayFundAnalysis analysis) async {
+  final prefs = await SharedPreferences.getInstance();
+  final today = dateText(DateTime.now());
+  final rows = await loadAlipayPredictionRecords(analysis.code);
+  final existing = rows.where((item) => item.date == today).firstOrNull;
+  final next = AlipayPredictionRecord(
+    date: today,
+    predictedDirection: analysis.predictionDirection,
+    confidence: analysis.confidence,
+    rawScore: analysis.rawScore,
+    updatedAt: analysis.updatedAt,
+    actualPct: existing?.actualPct,
+    hit: existing?.hit,
+  );
+  rows.removeWhere((item) => item.date == today);
+  rows.insert(0, next);
+  final limited = rows.take(80).map((item) => item.toJson()).toList();
+  await prefs.setString(alipayPredictionHistoryKey(analysis.code), jsonEncode(limited));
+}
+
+Future<void> updateAlipayPredictionActual(String code, String date, double actualPct) async {
+  final prefs = await SharedPreferences.getInstance();
+  final rows = await loadAlipayPredictionRecords(code);
+  final updated = rows.map((item) {
+    if (item.date != date) return item;
+    final actualDirection = actualPct > 0
+        ? 1
+        : actualPct < 0
+            ? -1
+            : 0;
+    return AlipayPredictionRecord(
+      date: item.date,
+      predictedDirection: item.predictedDirection,
+      confidence: item.confidence,
+      rawScore: item.rawScore,
+      updatedAt: item.updatedAt,
+      actualPct: actualPct,
+      hit: item.predictedDirection == actualDirection,
+    );
+  }).toList();
+  await prefs.setString(alipayPredictionHistoryKey(code), jsonEncode(updated.map((item) => item.toJson()).toList()));
+}
+
+String rateText(int hit, int total) {
+  if (total <= 0) return '--';
+  return '${(hit / total * 100).toStringAsFixed(0)}%';
+}
+
+String alipayDirectionName(int direction) {
+  if (direction > 0) return '偏多';
+  if (direction < 0) return '偏空';
+  return '不判断';
+}
+
+Color alipaySignalColor(double score) {
+  if (score > 0) return AppColors.red;
+  if (score < 0) return AppColors.green;
+  return AppColors.muted;
+}
+
+String alipayVolumeText(double? value) {
+  if (value == null || !value.isFinite) return '--';
+  final absValue = value.abs();
+  if (absValue >= 100000000) return '${(value / 100000000).toStringAsFixed(absValue >= 1000000000 ? 1 : 2)}亿';
+  if (absValue >= 10000) return '${(value / 10000).toStringAsFixed(absValue >= 1000000 ? 1 : 2)}万';
+  return value.toStringAsFixed(0);
+}
+
+List<String> alipayCoreReasons(AlipayFundAnalysis analysis) {
+  final rows = <String>[];
+  if (analysis.indexSignal.ready) {
+    rows.add('跟踪指数尾盘${analysis.indexSignal.signalText.replaceAll('🔴', '').replaceAll('🟢', '').replaceAll('⚪', '')}，指数层贡献 ${analysis.indexScore.toStringAsFixed(1)} 分。');
+  }
+  final activeHoldings = analysis.tailSignals.where((item) => item.ready && item.scorePct != 0).toList()
+    ..sort((a, b) => b.scorePct.abs().compareTo(a.scorePct.abs()));
+  if (activeHoldings.isNotEmpty) {
+    final names = activeHoldings.take(3).map((item) => '${item.name}${item.scorePct > 0 ? '放量上涨' : '放量下跌'}').join('、');
+    rows.add('重仓股按持仓占比加权后贡献 ${analysis.holdingsScore.toStringAsFixed(1)} 分，主要来自 $names。');
+  } else if (analysis.holdings.isNotEmpty) {
+    rows.add('前十大重仓股尾盘未形成有效放量同向信号，持仓层暂不强行给方向。');
+  }
+  final readyEtfs = analysis.sectorEtfSignals.where((item) => item.ready && item.score != 0).toList();
+  if (readyEtfs.isNotEmpty) {
+    rows.add('同板块 ETF 联动贡献 ${analysis.sectorEtfScore.toStringAsFixed(1)} 分，用来确认板块是否一起走强或走弱。');
+  }
+  final degraded = analysis.filterSignals.where((item) => item.degraded).firstOrNull;
+  if (degraded != null) {
+    rows.add('${degraded.title}触发降级：${degraded.status}。');
+  }
+  if (rows.isEmpty) {
+    rows.add('真实接口暂未给出足够有效信号，本次结论以“不判断”为主。');
+  }
+  return rows;
+}
+
+List<String> alipayRiskTips(AlipayFundAnalysis analysis) {
+  final rows = <String>[];
+  if (analysis.confidence != '高') {
+    rows.add('置信度为${analysis.confidence}，说明关键数据没有完全同向，适合少动或等下一次 14:58 信号。');
+  }
+  if (analysis.tailReadyWeightPct < 30 && analysis.holdings.isNotEmpty) {
+    rows.add('可用重仓股尾盘数据覆盖 ${analysis.tailReadyWeightPct.toStringAsFixed(1)}%，覆盖不足时不适合下重手。');
+  }
+  final premium = analysis.etfSnapshot?.premiumDiscountRatio;
+  if (premium != null && premium.abs() >= 1) {
+    rows.add('目标 ETF 折溢价达到 ${pct(premium)}，可能影响次日套利和情绪。');
+  }
+  if (analysis.rawScore.abs() <= 20) {
+    rows.add('原始总分位于 -20 到 +20 之间，属于多空不够清楚的区间。');
+  }
+  return rows;
+}
+
+String alipayNotificationBasis(AlipayFundAnalysis analysis) {
+  final rows = <String>[];
+  if (analysis.indexScore > 0) rows.add('指数放量上涨');
+  if (analysis.indexScore < 0) rows.add('指数放量下跌');
+  if (analysis.holdingsScore > 0) rows.add('重仓股加权偏多');
+  if (analysis.holdingsScore < 0) rows.add('重仓股加权偏空');
+  if (analysis.sectorEtfScore > 0) rows.add('ETF联动走强');
+  if (analysis.sectorEtfScore < 0) rows.add('ETF联动走弱');
+  final degraded = analysis.filterSignals.where((item) => item.degraded).firstOrNull;
+  if (degraded != null) rows.add('${degraded.title}降级');
+  if (rows.isEmpty) rows.add('有效信号不足，不强行判断');
+  return rows.take(3).join('+');
+}
+
+String alipayUsValidationText(AlipayFundAnalysis analysis, String usSummary) {
+  final usWeak = usSummary.contains('-');
+  final usStrong = usSummary.contains('+') && !usWeak;
+  if (analysis.predictionDirection > 0 && usWeak) return '外围转弱，请注意风险';
+  if (analysis.predictionDirection > 0) return '预判维持偏多';
+  if (analysis.predictionDirection < 0 && usStrong) return '外围转暖，偏空需开盘验证';
+  if (analysis.predictionDirection < 0) return '预判维持偏空';
+  return '原结论不判断，开盘后看板块承接';
+}
+
+class _AlipayTrendPoint {
+  const _AlipayTrendPoint({required this.minute, required this.price, required this.volume});
+
+  final int minute;
+  final double price;
+  final double volume;
+}
+
+class _KnownIndex {
+  const _KnownIndex(this.code, this.name);
+  final String code;
+  final String name;
+}
+
+_KnownIndex? knownAlipayEtfIndex(String code) {
+  const rows = {
+    '159796': _KnownIndex('H30319', '中证电池指数'),
+    '159755': _KnownIndex('H30319', '中证电池指数'),
+    '159767': _KnownIndex('H30319', '中证电池指数'),
+    '159840': _KnownIndex('H30319', '中证电池指数'),
+    '510300': _KnownIndex('000300', '沪深300'),
+    '159915': _KnownIndex('399006', '创业板指'),
+    '510500': _KnownIndex('000905', '中证500'),
+    '588000': _KnownIndex('000688', '科创50'),
+  };
+  return rows[code];
+}
+
+List<String> knownAlipaySectorEtfs(String code) {
+  const rows = {
+    '159796': ['159796', '159755', '159767'],
+    '159755': ['159755', '159796', '159767'],
+    '159767': ['159767', '159796', '159755'],
+    '159840': ['159840', '159796', '159755'],
+    '510300': ['510300'],
+    '510500': ['510500'],
+    '159915': ['159915'],
+    '588000': ['588000'],
+  };
+  return rows[code] ?? (RegExp(r'^\d{6}$').hasMatch(code) ? [code] : const <String>[]);
+}
+
+String? alipayIndexSecid(String code) {
+  if (code.isEmpty) return null;
+  if (RegExp(r'^[A-Z]').hasMatch(code)) return '1.$code';
+  if (code.startsWith('399')) return '0.$code';
+  if (code.startsWith('0') || code.startsWith('H')) return '1.$code';
+  return '${marketFromCode(code)}.$code';
+}
+
+const Set<String> chinaMarketClosedDates = {
+  '2026-01-01',
+  '2026-01-02',
+  '2026-02-15',
+  '2026-02-16',
+  '2026-02-17',
+  '2026-02-18',
+  '2026-02-19',
+  '2026-02-20',
+  '2026-02-21',
+  '2026-02-22',
+  '2026-02-23',
+  '2026-04-04',
+  '2026-04-05',
+  '2026-04-06',
+  '2026-05-01',
+  '2026-05-02',
+  '2026-05-03',
+  '2026-05-04',
+  '2026-05-05',
+  '2026-06-19',
+  '2026-09-25',
+  '2026-10-01',
+  '2026-10-02',
+  '2026-10-03',
+  '2026-10-04',
+  '2026-10-05',
+  '2026-10-06',
+  '2026-10-07',
+};
+
+bool isChinaATradingDay(DateTime date) {
+  if (date.weekday == DateTime.saturday || date.weekday == DateTime.sunday) return false;
+  return !chinaMarketClosedDates.contains(dateText(date));
+}
+
+bool shouldAlipay1455Reminder() {
+  final now = DateTime.now();
+  if (!isChinaATradingDay(now)) return false;
+  final minute = now.hour * 60 + now.minute;
+  return minute >= 14 * 60 + 55 && minute < 14 * 60 + 58;
+}
+
+bool shouldAlipay1458Refresh() {
+  final now = DateTime.now();
+  if (!isChinaATradingDay(now)) return false;
+  final minute = now.hour * 60 + now.minute;
+  return minute >= 14 * 60 + 58 && minute <= 15 * 60;
+}
+
+bool shouldAlipay0915Validation() {
+  final now = DateTime.now();
+  if (!isChinaATradingDay(now)) return false;
+  final minute = now.hour * 60 + now.minute;
+  return minute >= 9 * 60 + 15 && minute < 9 * 60 + 18;
+}
+
+String inferAlipayFundType(String name) {
+  if (name.contains('债')) return '债券型';
+  if (name.contains('指数') || name.contains('ETF') || name.contains('联接') || name.contains('LOF')) return '指数型';
+  if (name.contains('混合')) return '混合型';
+  if (name.contains('股票')) return '股票型';
+  return '类型待确认';
+}
+
+_AlipayTrendPoint? parseAlipayTrendPoint(String row) {
+  final parts = row.split(',');
+  if (parts.length < 6) return null;
+  final minute = minuteOfDayFromTrendTime(parts[0]);
+  final price = toNullableDouble(parts[2]) ?? toNullableDouble(parts[1]);
+  final volume = toNullableDouble(parts[5]);
+  if (minute == null || price == null || volume == null || price <= 0) return null;
+  return _AlipayTrendPoint(minute: minute, price: price, volume: volume);
+}
+
+int? minuteOfDayFromTrendTime(String value) {
+  final time = value.trim().split(' ').last;
+  final parts = time.split(':');
+  if (parts.length < 2) return null;
+  final hour = int.tryParse(parts[0]);
+  final minute = int.tryParse(parts[1]);
+  if (hour == null || minute == null) return null;
+  return hour * 60 + minute;
+}
+
+double? normalizeEastmoneyPrice(double? value) {
+  if (value == null || value <= 0 || value >= 900000000) return null;
+  if (value.abs() >= 10000) return value / 100;
+  if (value.abs() >= 1000) return value / 1000;
+  return value;
+}
+
+double? normalizeEastmoneyPct(double? value) {
+  if (value == null || value.abs() >= 900000000) return null;
+  return value / 100;
 }
 
 class HeaderSummary extends StatelessWidget {

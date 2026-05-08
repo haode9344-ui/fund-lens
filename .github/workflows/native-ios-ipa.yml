@@ -1,0 +1,60 @@
+name: Build Native Xiaoyou iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "ios/**"
+      - ".github/workflows/native-ios-ipa.yml"
+
+jobs:
+  build-native-ios-ipa:
+    name: Build unsigned native Swift IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build native iOS app without codesign
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/FundLens.xcodeproj \
+            -scheme FundLens \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath ios/build/xcode \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build 2>&1 | tee ios/build-native-ios.log
+
+      - name: Pack unsigned IPA
+        run: |
+          rm -rf ios/build/ipa
+          mkdir -p ios/build/ipa/Payload
+          APP_PATH=$(find ios/build/xcode -type d -name FundLens.app | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error title=FundLens.app not found::xcodebuild finished but no FundLens.app was found."
+            find ios/build -maxdepth 6 -type d | sort
+            exit 1
+          fi
+          cp -R "$APP_PATH" ios/build/ipa/Payload/Xiaoyou.app
+          cd ios/build/ipa
+          /usr/bin/zip -qry xiaoyou-native-unsigned.ipa Payload
+          ls -lh xiaoyou-native-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaoyou-native-ios-unsigned-ipa
+          path: ios/build/ipa/xiaoyou-native-unsigned.ipa
+          if-no-files-found: error
