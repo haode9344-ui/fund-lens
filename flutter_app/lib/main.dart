@@ -1808,8 +1808,6 @@ class _FundDetailPageState extends State<FundDetailPage> {
               ),
               const SizedBox(height: 12),
             ],
-            PositionProfitCenterCard(item: _item, analysis: _analysis),
-            const SizedBox(height: 12),
             MarketRiskProfileCard(analysis: _analysis),
             const SizedBox(height: 12),
             CardShell(
@@ -1864,8 +1862,6 @@ class _FundDetailPageState extends State<FundDetailPage> {
             ),
             const SizedBox(height: 12),
             BeginnerSummaryCard(analysis: _analysis),
-            const SizedBox(height: 12),
-            TomorrowScenariosCard(analysis: _analysis),
             const SizedBox(height: 12),
             DataTruthCard(analysis: _analysis),
             const SizedBox(height: 12),
@@ -2802,11 +2798,108 @@ class YesterdayReviewCard extends StatelessWidget {
             const SizedBox(height: 10),
             _ReviewLine(label: '模型记录', text: review.trackRecord),
           ],
+          if (review.predictionRecords.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            PredictionReviewHistory(records: review.predictionRecords),
+          ],
           const SizedBox(height: 10),
           _ReviewLine(label: reasonLabel, text: review.diagnosis),
           const SizedBox(height: 8),
           _ReviewLine(label: '学习改进', text: review.nextAdjustment),
         ],
+      ),
+    );
+  }
+}
+
+class PredictionReviewHistory extends StatelessWidget {
+  const PredictionReviewHistory({super.key, required this.records});
+
+  final List<PredictionReviewRecord> records;
+
+  @override
+  Widget build(BuildContext context) {
+    final latest = records.take(7).toList();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.softGrey,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('预判记录', style: TextStyle(fontWeight: FontWeight.w900)),
+          const SizedBox(height: 4),
+          const Text(
+            '每次复盘都会记录 14:55 预判方向和第二天真实方向。',
+            style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 10),
+          ...latest.map((record) => PredictionReviewRecordRow(record: record)),
+        ],
+      ),
+    );
+  }
+}
+
+class PredictionReviewRecordRow extends StatelessWidget {
+  const PredictionReviewRecordRow({super.key, required this.record});
+
+  final PredictionReviewRecord record;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = record.success ? AppColors.green : AppColors.red;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 82,
+            child: Text(record.date, style: const TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w800)),
+          ),
+          Expanded(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                DirectionChip(label: '预判', direction: record.predictedDirection),
+                DirectionChip(label: '实际', direction: record.actualDirection),
+              ],
+            ),
+          ),
+          Text(
+            record.success ? '命中' : '未中',
+            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w900),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class DirectionChip extends StatelessWidget {
+  const DirectionChip({super.key, required this.label, required this.direction});
+
+  final String label;
+  final int direction;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = directionReviewColor(direction);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.24)),
+      ),
+      child: Text(
+        '$label ${directionReviewText(direction)}',
+        style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w900),
       ),
     );
   }
@@ -4300,7 +4393,13 @@ class FundService {
     final success = predictedDirection == actualDirection;
     final actualText = actualDirectionText(actualDirection);
     final scoreAdjustment = reviewScoreAdjustment(predictedDirection, actualDirection, success);
-    final trackRecord = await _saveAndSummarizeReviewHistory(code, reviewDate, success);
+    final reviewHistory = await _saveAndSummarizeReviewHistory(
+      code,
+      reviewDate,
+      predictedDirection,
+      actualDirection,
+      success,
+    );
     final shouldLearn = await _markReviewLearningOnce(code, reviewDate);
     if (shouldLearn) {
       await _updateFactorCalibration(theme, lock, actualDirection);
@@ -4322,30 +4421,49 @@ class FundService {
       predictedDirection: predictedDirection,
       actualDirection: actualDirection,
       scoreAdjustment: scoreAdjustment,
-      trackRecord: calibrationText.isEmpty ? trackRecord : '$trackRecord $calibrationText',
+      trackRecord: calibrationText.isEmpty ? reviewHistory.text : '${reviewHistory.text} $calibrationText',
+      predictionRecords: reviewHistory.records,
     );
   }
 
-  Future<String> _saveAndSummarizeReviewHistory(String code, String date, bool success) async {
+  Future<ReviewHistorySummary> _saveAndSummarizeReviewHistory(
+    String code,
+    String date,
+    int predictedDirection,
+    int actualDirection,
+    bool success,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     final key = 'review_history_$code';
     final raw = prefs.getString(key);
     final rows = <Map<String, dynamic>>[];
     if (raw != null && raw.isNotEmpty) {
       try {
-        rows.addAll((jsonDecode(raw) as List<dynamic>).whereType<Map<String, dynamic>>());
+        final decoded = jsonDecode(raw) as List<dynamic>;
+        for (final row in decoded.whereType<Map>()) {
+          rows.add(Map<String, dynamic>.from(row));
+        }
       } catch (_) {
         rows.clear();
       }
     }
     rows.removeWhere((row) => row['date'] == date);
-    rows.add({'date': date, 'success': success});
+    rows.add({
+      'date': date,
+      'predictedDirection': predictedDirection,
+      'actualDirection': actualDirection,
+      'success': success,
+    });
     rows.sort((a, b) => (b['date'] ?? '').toString().compareTo((a['date'] ?? '').toString()));
-    final latest = rows.take(7).toList();
-    await prefs.setString(key, jsonEncode(latest));
-    final hit = latest.where((row) => row['success'] == true).length;
+    final stored = rows.take(60).toList();
+    await prefs.setString(key, jsonEncode(stored));
+    final latest = stored.take(7).map(PredictionReviewRecord.fromJson).toList();
+    final hit = latest.where((row) => row.success).length;
     final miss = latest.length - hit;
-    return '近 ${latest.length} 次预判：命中 $hit 次，失误 $miss 次。连续使用后会自动累计到近 7 次。';
+    return ReviewHistorySummary(
+      text: '近 ${latest.length} 次预判：命中 $hit 次，失误 $miss 次。连续使用后会自动累计到近 7 次。',
+      records: latest,
+    );
   }
 
   Future<bool> _markReviewLearningOnce(String code, String date) async {
@@ -6574,6 +6692,7 @@ class YesterdayReview {
     this.actualDirection = 0,
     this.scoreAdjustment = 0,
     this.trackRecord = '',
+    this.predictionRecords = const [],
   });
 
   final String headline;
@@ -6585,6 +6704,45 @@ class YesterdayReview {
   final int actualDirection;
   final int scoreAdjustment;
   final String trackRecord;
+  final List<PredictionReviewRecord> predictionRecords;
+}
+
+class PredictionReviewRecord {
+  const PredictionReviewRecord({
+    required this.date,
+    required this.predictedDirection,
+    required this.actualDirection,
+    required this.success,
+  });
+
+  final String date;
+  final int predictedDirection;
+  final int actualDirection;
+  final bool success;
+
+  Map<String, dynamic> toJson() => {
+        'date': date,
+        'predictedDirection': predictedDirection,
+        'actualDirection': actualDirection,
+        'success': success,
+      };
+
+  factory PredictionReviewRecord.fromJson(Map<String, dynamic> json) => PredictionReviewRecord(
+        date: (json['date'] ?? '').toString(),
+        predictedDirection: toInt(json['predictedDirection']),
+        actualDirection: toInt(json['actualDirection']),
+        success: json['success'] == true,
+      );
+}
+
+class ReviewHistorySummary {
+  const ReviewHistorySummary({
+    required this.text,
+    required this.records,
+  });
+
+  final String text;
+  final List<PredictionReviewRecord> records;
 }
 
 class FactorCalibrationStat {
@@ -9621,11 +9779,6 @@ List<DataTruthItem> realDataChecklist(FundAnalysis analysis) {
           : analysis.decision.etfPricingState,
       available: !analysis.decision.etfPricingState.contains('暂时还没拿齐'),
     ),
-    DataTruthItem(
-      title: '收益日历',
-      detail: '只按已确认份额和真实历史净值计算；旧持仓缺少份额时不会倒推补算。',
-      available: analysis.settledItem.holdingLots.isNotEmpty,
-    ),
   ];
 }
 
@@ -9881,6 +10034,18 @@ String directionName(int direction) {
   if (direction > 0) return '偏强';
   if (direction < 0) return '偏弱';
   return '震荡';
+}
+
+String directionReviewText(int direction) {
+  if (direction > 0) return '偏多';
+  if (direction < 0) return '偏空';
+  return '不判断';
+}
+
+Color directionReviewColor(int direction) {
+  if (direction > 0) return AppColors.red;
+  if (direction < 0) return AppColors.green;
+  return AppColors.muted;
 }
 
 String actualDirectionText(int direction) {
